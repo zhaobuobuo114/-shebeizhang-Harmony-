@@ -15,7 +15,8 @@
 3. `File > Project Structure > Signing Configs` 登录华为账号并勾选自动签名（真机运行必需，模拟器可跳过）。
 4. 连接手机或启动模拟器 → 点 ▶ 运行。
 
-产物：`entry/build/default/outputs/default/entry-default-signed.hap`（约 1.3 MB）。
+产物：`entry/build/default/outputs/default/entry-default-signed.hap`（约 1.3 MB），
+也可以直接从 [Releases](../../releases) 下载已签名的安装包。
 
 **版本配置**
 
