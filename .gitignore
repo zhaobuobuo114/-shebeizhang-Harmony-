@@ -1,0 +1,17 @@
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/entry/.preview
+/entry/oh_modules
+
+# 本地日志与临时预览图（不是源码，不入库）
+_*.log
+_preview_*.png
