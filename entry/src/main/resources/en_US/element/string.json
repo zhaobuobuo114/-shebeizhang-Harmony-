@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Device Ledger module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Device Ledger"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Device Ledger"
+    }
+  ]
+}
