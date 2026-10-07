@@ -706,28 +706,37 @@ struct Index {
               /* ============ 排序 + 收藏筛选（没有数据时不显示） ============ */
               if (this.deviceList.length > 0) {
                 Row() {
-                  Text('排序')
-                    .fontSize(12)
-                    .fontColor(this.theme.sub)
-                    .margin({ right: 2 })
-                  /* 正序 / 倒序：上下两个箭头，当前方向的那一个点亮 */
-                  Column() {
-                    Text('▲')
-                      .fontSize(9)
-                      .fontColor(this.sortAsc ? this.theme.primary : this.theme.sub)
-                      .opacity(this.sortAsc ? 1 : 0.45)
-                    Text('▼')
-                      .fontSize(9)
-                      .fontColor(this.sortAsc ? this.theme.sub : this.theme.primary)
-                      .opacity(this.sortAsc ? 0.45 : 1)
-                      .margin({ top: 2 })
+                  /* 「排序」两个字连同右边的上下双箭头是一整块热区：点哪儿都是切换方向 */
+                  Row() {
+                    Text('排序')
+                      .fontSize(12)
+                      .fontColor(this.theme.sub)
+                      .margin({ right: 2 })
+                    /* 正序 / 倒序：上下两个箭头，当前方向的那一个点亮。
+                       间距压成 -1，两个三角贴得更紧 */
+                    Column() {
+                      Text('▲')
+                        .fontSize(9)
+                        .fontColor(this.sortAsc ? this.theme.primary : this.theme.sub)
+                        .opacity(this.sortAsc ? 1 : 0.45)
+                      Text('▼')
+                        .fontSize(9)
+                        .fontColor(this.sortAsc ? this.theme.sub : this.theme.primary)
+                        .opacity(this.sortAsc ? 0.45 : 1)
+                        .margin({ top: -1 })
+                    }
+                    .alignItems(HorizontalAlign.Center)
                   }
-                  .alignItems(HorizontalAlign.Center)
-                  .padding({ left: 6, right: 6, top: 3, bottom: 3 })
+                  .alignItems(VerticalAlign.Center)
+                  // 左右各留 6 的内边距，再用 -6 的外边距顶回去：字的位置不动，热区变大
+                  .padding({ left: 6, right: 6, top: 5, bottom: 5 })
+                  .margin({ left: -6, right: 4 })
                   .borderRadius(8)
-                  .margin({ right: 4 })
                   .focusable(false)
                   .scale({ x: this.sc('sortDir'), y: this.sc('sortDir') })
+                  // 这条 .animation 只管按下的缩放回弹。箭头的配色不写在它"之上"，
+                  // 因此不受它影响，交给 toggleSortDir 里的 animateTo（260ms Friction）——
+                  // 同一个属性同时挂 .animation 和 animateTo，官方没有定义优先级，表现不可靠
                   .animation({ duration: 140, curve: Curve.EaseOut })
                   .onTouch((e: TouchEvent) => {
                     this.onPress(e, 'sortDir');
