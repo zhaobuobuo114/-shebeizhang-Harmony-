@@ -31,6 +31,8 @@ struct Index {
   @State deviceList: DeviceItem[] = [];
   @State theme: AppTheme = LIGHT_THEME;
   @State sortType: string = 'avg';
+  /** 排序方向：false = 倒序（大在前，默认），true = 正序（小在前） */
+  @State sortAsc: boolean = false;
 
   // 汇总数据（单独存成状态，保证总览整块能稳定刷新）
   @State statCount: number = 0;
@@ -194,19 +196,26 @@ struct Index {
       }
       list = fav;
     }
+    // 倒序是默认方向：下面的比较器都按"大在前"写，正序时整体取反即可
+    const dir: number = this.sortAsc ? -1 : 1;
     if (this.sortType === 'price') {
-      list.sort((a: DeviceItem, b: DeviceItem): number => b.price - a.price);
+      list.sort((a: DeviceItem, b: DeviceItem): number => dir * (b.price - a.price));
     } else if (this.sortType === 'date') {
       list.sort((a: DeviceItem, b: DeviceItem): number => {
+        let r: number = 0;
         if (a.buyDate < b.buyDate) {
-          return 1;
+          r = 1;
+        } else if (a.buyDate > b.buyDate) {
+          r = -1;
         }
-        return a.buyDate > b.buyDate ? -1 : 0;
+        return dir * r;
       });
     } else if (this.sortType === 'days') {
-      list.sort((a: DeviceItem, b: DeviceItem): number => DeviceCalc.daysUsed(b) - DeviceCalc.daysUsed(a));
+      list.sort((a: DeviceItem, b: DeviceItem): number =>
+        dir * (DeviceCalc.daysUsed(b) - DeviceCalc.daysUsed(a)));
     } else {
-      list.sort((a: DeviceItem, b: DeviceItem): number => DeviceCalc.avgPerDay(b) - DeviceCalc.avgPerDay(a));
+      list.sort((a: DeviceItem, b: DeviceItem): number =>
+        dir * (DeviceCalc.avgPerDay(b) - DeviceCalc.avgPerDay(a)));
     }
     return list;
   }
@@ -320,16 +329,46 @@ struct Index {
 
   /** 排序按钮数据（每次都生成新数组，保证 ForEach 会重跑） */
   private sortOptions(): SortOption[] {
+    // 正序时文案跟着反过来，免得"日均最高"配上一行从低到高的数据自相矛盾
+    const asc: boolean = this.sortAsc;
     const opts: SortOption[] = [
-      { label: '日均最高', type: 'avg', selected: this.sortType === 'avg', key: '' },
-      { label: '价格最高', type: 'price', selected: this.sortType === 'price', key: '' },
-      { label: '最近购买', type: 'date', selected: this.sortType === 'date', key: '' },
-      { label: '用最久', type: 'days', selected: this.sortType === 'days', key: '' }
+      {
+        label: asc ? '日均最低' : '日均最高',
+        type: 'avg',
+        selected: this.sortType === 'avg',
+        key: ''
+      },
+      {
+        label: asc ? '价格最低' : '价格最高',
+        type: 'price',
+        selected: this.sortType === 'price',
+        key: ''
+      },
+      {
+        label: asc ? '最早购买' : '最近购买',
+        type: 'date',
+        selected: this.sortType === 'date',
+        key: ''
+      },
+      {
+        label: asc ? '用最短' : '用最久',
+        type: 'days',
+        selected: this.sortType === 'days',
+        key: ''
+      }
     ];
     for (let i: number = 0; i < opts.length; i++) {
-      opts[i].key = opts[i].type + (opts[i].selected ? '1' : '0');
+      // key 里带上方向，方向一变 ForEach 才会重跑、文案才会跟着换
+      opts[i].key = opts[i].type + (opts[i].selected ? '1' : '0') + (asc ? 'a' : 'd');
     }
     return opts;
+  }
+
+  /** 切换排序方向（点箭头，或点当前已选中的那个排序胶囊） */
+  private toggleSortDir(): void {
+    animateTo({ duration: 260, curve: Curve.Friction }, () => {
+      this.sortAsc = !this.sortAsc;
+    });
   }
 
   /** 设备类型格子（含选中态，key 里带上选中态） */
@@ -671,6 +710,31 @@ struct Index {
                     .fontSize(12)
                     .fontColor(this.theme.sub)
                     .margin({ right: 2 })
+                  /* 正序 / 倒序：上下两个箭头，当前方向的那一个点亮 */
+                  Column() {
+                    Text('▲')
+                      .fontSize(9)
+                      .fontColor(this.sortAsc ? this.theme.primary : this.theme.sub)
+                      .opacity(this.sortAsc ? 1 : 0.45)
+                    Text('▼')
+                      .fontSize(9)
+                      .fontColor(this.sortAsc ? this.theme.sub : this.theme.primary)
+                      .opacity(this.sortAsc ? 0.45 : 1)
+                      .margin({ top: 2 })
+                  }
+                  .alignItems(HorizontalAlign.Center)
+                  .padding({ left: 6, right: 6, top: 3, bottom: 3 })
+                  .borderRadius(8)
+                  .margin({ right: 4 })
+                  .focusable(false)
+                  .scale({ x: this.sc('sortDir'), y: this.sc('sortDir') })
+                  .animation({ duration: 140, curve: Curve.EaseOut })
+                  .onTouch((e: TouchEvent) => {
+                    this.onPress(e, 'sortDir');
+                  })
+                  .onClick(() => {
+                    this.toggleSortDir();
+                  })
                   // 胶囊多了会超出一屏，这里让整行可以横向滑动，"排序"两个字固定不动
                   Scroll() {
                     Row() {
@@ -705,9 +769,14 @@ struct Index {
                             this.onPress(e, 'sort:' + opt.type);
                           })
                           .onClick(() => {
-                            animateTo({ duration: 260, curve: Curve.Friction }, () => {
-                              this.sortType = opt.type;
-                            });
+                            if (this.sortType === opt.type) {
+                              // 点的就是当前这一项：翻方向，不改变排序字段
+                              this.toggleSortDir();
+                            } else {
+                              animateTo({ duration: 260, curve: Curve.Friction }, () => {
+                                this.sortType = opt.type;
+                              });
+                            }
                           })
                       }, (opt: SortOption) => opt.key)
                     }
@@ -818,8 +887,10 @@ struct Index {
         .padding({ left: 16, right: 16, bottom: 20 })
         .edgeEffect(EdgeEffect.Spring)
         .scrollBar(BarState.Off)
-        .onScroll((offset: number) => {
-          this.onListScroll(offset);
+        .onDidScroll(() => {
+          // List 的滚动回调给的是"这一次的增量偏移"，不是当前滚到哪了。
+          // 绝对位置必须直接从控制器上读，否则「滚过 320」这种判断永远不成立。
+          this.onListScroll(this.scroller.currentOffset().yOffset);
         })
       }
       .width('100%')

@@ -98,7 +98,8 @@ export struct ChartCard {
     const total: number = this.totalValue();
     const shown: number = total * this.progress;
     if (this.mode === 'amount') {
-      return '¥' + Fmt.money(shown);
+      // 单位跟最终值保持一致，动画过程里才不会在「99,999」和「10.0万」之间跳一下
+      return '¥' + Fmt.moneyCompactAs(shown, total);
     }
     return Math.round(shown).toString();
   }
@@ -115,7 +116,7 @@ export struct ChartCard {
   private centerSettled(): string {
     const total: number = this.totalValue();
     if (this.mode === 'amount') {
-      return '¥' + Fmt.money(total);
+      return '¥' + Fmt.moneyCompact(total);
     }
     return Math.round(total).toString();
   }
