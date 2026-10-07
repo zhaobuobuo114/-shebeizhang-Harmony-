@@ -37,7 +37,9 @@ export class Fmt {
    */
   static moneyCompactAs(v: number, ref: number): string {
     const a: number = Math.abs(ref);
-    if (a >= 100000000) {
+    // 先用"万"试算一次：99,999,999 四舍五入后会变成 10000.0万，这种怪结果直接改用亿
+    const wan: number = Math.round(a / 1000) / 10;
+    if (wan >= 10000) {
       return Fmt.oneDecimal(v / 100000000) + '亿';
     }
     if (a >= 100000) {
