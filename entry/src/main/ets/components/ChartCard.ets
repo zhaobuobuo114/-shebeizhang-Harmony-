@@ -21,7 +21,10 @@ export struct ChartCard {
   @Prop @Watch('onTheme') theme: AppTheme = LIGHT_THEME;
 
   @State mode: string = 'amount';
-  @State progress: number = 0;
+  // 展开动画的推进量。刻意不做成 @State：它每帧都在变，
+  // 一旦挂上状态，820ms 里会触发五十多次组件重建，动画会一顿一顿的。
+  // 圆心数字也是画布画出来的，直接 draw() 重绘就够。
+  private progress: number = 0;
   @State rows: LegendRow[] = [];
   @State open: boolean = true;
   // 按压动效：记录当前被按下的控件标识
@@ -175,14 +178,28 @@ export struct ChartCard {
       ctx.stroke();
     } else {
       const end: number = A0 + Math.PI * 2 * this.progress;
+      // 相邻两段之间留 3vp 的缝。早先这里是给每段描一圈 3px 的卡片色边框，
+      // 但 stroke 是以路径为中心向两侧各铺一半的，会把两边的扇面各吃掉一点，
+      // 小份额那一段看起来就比图例的百分比窄。改成按角度让位之后，
+      // 每一段的起止角度都是准的，和安卓版的算法也完全对上了。
+      const ring: number = (rOut + rIn) / 2;
+      const gap: number = 3 / ring;
+      const full: number = Math.PI * 2;
       let cur: number = A0;
       for (let i: number = 0; i < this.slices.length; i++) {
         const s0: number = cur;
-        const s1: number = cur + Math.PI * 2 * (this.slices[i].v / total);
+        // 最后一段直接收在整圈上，避免逐段累加的浮点误差在 12 点方向留一道细缝
+        const s1: number = i === this.slices.length - 1 ? A0 + full : cur + full * (this.slices[i].v / total);
         cur = s1;
         const b0: number = s0 > A0 ? s0 : A0;
-        const b1: number = s1 < end ? s1 : end;
-        if (b1 - b0 <= 0.001) {
+        const raw1: number = s1 < end ? s1 : end;
+        if (raw1 - b0 <= 0.0001) {
+          continue;
+        }
+        // 整段都已显示时才让出缝隙，否则动画推进中的那一段会一跳一跳地变窄
+        const whole: boolean = raw1 >= s1 - 0.0001;
+        const b1: number = whole ? s1 - gap : raw1;
+        if (b1 - b0 <= 0.0001) {
           continue;
         }
         // 扇环：外弧 -> 内弧反向 -> 闭合
@@ -192,9 +209,6 @@ export struct ChartCard {
         ctx.closePath();
         ctx.fillStyle = this.slices[i].c;
         ctx.fill();
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = th.card;
-        ctx.stroke();
       }
     }
 
@@ -285,6 +299,8 @@ export struct ChartCard {
 
   private buildRows(): LegendRow[] {
     const total: number = this.totalValue();
+    // 百分比统一由「最大余数法」分配，整列加起来精确等于 100%
+    const pct: number[] = ChartData.percents(this.slices);
     const rows: LegendRow[] = [];
     for (let i: number = 0; i < this.slices.length; i++) {
       const v: number = this.slices[i].v;
@@ -292,7 +308,7 @@ export struct ChartCard {
       rows.push({
         name: this.slices[i].n,
         value: value,
-        percent: total > 0 ? Fmt.percent(v / total) : '0%',
+        percent: total > 0 ? (pct[i].toString() + '%') : '0%',
         color: this.slices[i].c,
         key: this.slices[i].n + '|' + v + '|' + this.mode
       });

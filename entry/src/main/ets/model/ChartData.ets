@@ -67,4 +67,71 @@ export class ChartData {
     }
     return sum;
   }
+
+  /**
+   * 各段占整圆的百分比（整数），保证加在一起精确等于 100。
+   *
+   * 逐段各自四舍五入是不行的：三段各 33.3% 会算出 33/33/33 = 99%，
+   * 图例那一列看着就少了 1%。这里用「最大余数法」：先给每段取其下整，
+   * 再把剩下的名额按小数部分从大到小依次补 1，和始终是 100。
+   *
+   * 另外保底：凡是数值不为 0 的段至少给 1%，避免出现「占了钱却写着 0%」。
+   */
+  static percents(slices: PieSlice[]): number[] {
+    const n: number = slices.length;
+    const out: number[] = [];
+    let total: number = 0;
+    for (let i: number = 0; i < n; i++) {
+      total += slices[i].v;
+      out.push(0);
+    }
+    if (n === 0 || total <= 0) {
+      return out;
+    }
+
+    const raw: number[] = [];
+    const order: number[] = [];
+    let sum: number = 0;
+    for (let i: number = 0; i < n; i++) {
+      const exact: number = slices[i].v / total * 100;
+      raw.push(exact);
+      // 数值不为 0 就至少留 1%，否则这一段在图例里会是"占着份额却显示 0%"
+      let whole: number = Math.floor(exact);
+      if (whole === 0 && slices[i].v > 0) {
+        whole = 1;
+      }
+      out[i] = whole;
+      sum += whole;
+      order.push(i);
+    }
+
+    let diff: number = 100 - sum;
+    if (diff > 0) {
+      // 名额富余：小数部分越大的越该进位
+      order.sort((a: number, b: number): number => {
+        return (raw[b] - Math.floor(raw[b])) - (raw[a] - Math.floor(raw[a]));
+      });
+      let k: number = 0;
+      while (diff > 0) {
+        out[order[k % n]] = out[order[k % n]] + 1;
+        diff--;
+        k++;
+      }
+    } else if (diff < 0) {
+      // 保底提 1% 把总数顶过 100 了：从数值最大的段里往回扣
+      order.sort((a: number, b: number): number => slices[b].v - slices[a].v);
+      let k: number = 0;
+      let guard: number = 0;
+      while (diff < 0 && guard < n * 100) {
+        const i: number = order[k % n];
+        if (out[i] > 1) {
+          out[i] = out[i] - 1;
+          diff++;
+        }
+        k++;
+        guard++;
+      }
+    }
+    return out;
+  }
 }

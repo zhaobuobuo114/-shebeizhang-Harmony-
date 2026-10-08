@@ -25,6 +25,20 @@ interface KindTile {
   rowKey: string;
 }
 
+/** 一个排序胶囊在行里的横向位置（相对行首），只在初次布局时量一次 */
+interface ChipGeo {
+  key: string;
+  x: number;
+  w: number;
+}
+
+/** 胶囊的 3D 变形量：归属、绕 Y 轴转多少度、还剩多少不透明度 */
+interface ChipFx {
+  key: string;
+  rot: number;
+  alpha: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -79,6 +93,30 @@ struct Index {
   @State showTop: boolean = false;
   @State topScale: number = 1;
   @State topAlpha: number = 0;
+  // 点圆钮时那一段"起飞"特效：本体脉冲、图标送出、光环扩散
+  @State topIconY: number = 0;
+  @State topIconAlpha: number = 1;
+  @State topRingScale: number = 0.62;
+  @State topRingAlpha: number = 0;
+
+  // 排序方向切换时，整个上下箭头组绕 X 轴翻半圈
+  @State sortFlip: number = 0;
+
+  // 排序胶囊的立体转动
+  /** Scroll 视口宽度：判断整行装不装得下、以及右边被切掉多少 */
+  private chipViewW: number = 0;
+  /** 胶囊行的实际宽度：比视口宽才需要做"越过边线转开"的效果 */
+  private chipRowW: number = 0;
+  /** Scroll 当前的横向滚动距离 */
+  private chipScrollX: number = 0;
+  /** 胶囊行左边界的全局横坐标：各胶囊的静态位置都以它为基准 */
+  private chipRowX: number = 0;
+  /** 行的边界量到了才记胶囊位置，否则坐标没有基准 */
+  private chipRowReady: boolean = false;
+  /** 各胶囊相对行首的静态位置（只在初次布局时量一次） */
+  private chipGeos: ChipGeo[] = [];
+  /** 每个胶囊此刻的转角与透明度。做成 @State：整份重算一次刷一遍，比逐个改属性省事 */
+  @State chipFxs: ChipFx[] = [];
 
   // 按压动效：记录当前被按下的控件标识
   @State pressedKey: string = '';
@@ -86,11 +124,15 @@ struct Index {
   private todayStr: string = DateUtil.today();
   /** 整页列表的滚动控制器，回顶部要用 */
   private scroller: Scroller = new Scroller();
+  /** 排序胶囊那一行的横向滚动控制器：用它读偏移，好把胶囊转到该有的角度 */
+  private chipScroller: Scroller = new Scroller();
   /** 当前滚动位置（用于算回顶部的时长） */
   private scrollOffset: number = 0;
   /** 回顶部圆钮的逻辑状态（不参与渲染，只用来防抖） */
   private topShown: boolean = false;
   private topTimer: number = -1;
+  /** "起飞"特效里负责补回箭头的那一步 */
+  private topLaunch: number = -1;
 
   /* ------------------------------ 生命周期 ------------------------------ */
 
@@ -315,6 +357,55 @@ struct Index {
     }
   }
 
+  /**
+   * 点回顶部圆钮要走的一整套：页面照常滚回去，圆钮自己再送一段"起飞"。
+   *
+   * 四件事同时开始：
+   *   1. 本体先压一下再弹回来（90ms 压到 0.86、210ms Friction 弹回）；
+   *   2. 箭头向上飞出圆钮并淡掉（300ms EaseIn）；
+   *   3. 一圈主色光晕从圆钮大小扩到两倍再褪掉（420ms EaseOut）；
+   *   4. 300ms 后箭头从下方补回原位（260ms Friction），收成一记完整的"送一趟"。
+   */
+  private launchTopAction(): void {
+    if (this.topLaunch >= 0) {
+      clearTimeout(this.topLaunch);
+      this.topLaunch = -1;
+    }
+
+    this.scrollToTop();
+
+    // 1) 本体脉冲：先矮下去再弹回来，整个动作才有"被按下去"的实感
+    this.topScale = 0.86;
+    animateTo({ duration: 210, curve: Curve.Friction }, () => {
+      this.topScale = this.topShown ? 1 : 0.4;
+    });
+
+    // 2) 箭头起飞
+    animateTo({ duration: 300, curve: Curve.EaseIn }, () => {
+      this.topIconY = -26;
+      this.topIconAlpha = 0;
+    });
+
+    // 3) 光晕扩散：先把初值硬设回去（写在这两行里不带动画），再放飞
+    this.topRingScale = 0.62;
+    this.topRingAlpha = 0.5;
+    animateTo({ duration: 420, curve: Curve.EaseOut }, () => {
+      this.topRingScale = 2.1;
+      this.topRingAlpha = 0;
+    });
+
+    // 4) 落定的那一枚从下方补回来
+    this.topLaunch = setTimeout(() => {
+      this.topLaunch = -1;
+      this.topIconY = 16;
+      this.topIconAlpha = 0;
+      animateTo({ duration: 260, curve: Curve.Friction }, () => {
+        this.topIconY = 0;
+        this.topIconAlpha = 1;
+      });
+    }, 300);
+  }
+
   /** 回顶部：时长跟着滚动距离走，最远 460ms，曲线用 EaseOut 收尾 */
   private scrollToTop(): void {
     const off: number = this.scrollOffset;
@@ -364,10 +455,128 @@ struct Index {
     return opts;
   }
 
+  /** Area 里的量可能是数字也可能是带单位的字符串，还可能是空，统一换算成数字 */
+  private lenOf(v: Length | undefined): number {
+    if (v === undefined) {
+      return 0;
+    }
+    if (typeof v === 'number') {
+      return v;
+    }
+    const f: number = parseFloat(v.toString());
+    return Number.isNaN(f) ? 0 : f;
+  }
+
+  /**
+   * 记下某个胶囊在行里的横向位置（相对行首）。
+   * 只需要量一次：这一行横向滚动时胶囊相对行首的位置是不变的，
+   * 变的是整行被推走的距离，那部分直接读滚动控制器的偏移就行。
+   */
+  private recordChipGeo(key: string, area: Area): void {
+    if (!this.chipRowReady) {
+      // 行的左边界还没量到，记下来的坐标没有基准，先跳过
+      return;
+    }
+    const x: number = this.lenOf(area.globalPosition.x) - this.chipRowX;
+    const w: number = this.lenOf(area.width);
+    let known: boolean = false;
+    for (let i: number = 0; i < this.chipGeos.length; i++) {
+      if (this.chipGeos[i].key === key) {
+        known = true;
+        break;
+      }
+    }
+    if (!known) {
+      this.chipGeos.push({ key: key, x: x, w: w });
+      this.refreshChipFx();
+    }
+  }
+
+  /** 每次结构性变化时清掉旧尺寸（切换排序方向会让胶囊文案变长变短） */
+  private resetChipGeos(): void {
+    this.chipGeos = [];
+    this.chipFxs = [];
+  }
+
+  /**
+   * 重算每个胶囊的转角与透明度，一次刷到 @State 里。
+   * 横向滚动、初次量出几何尺寸时各调一次。
+   *
+   * 变形的依据是"这一颗被可见范围切掉了多少"，而不是"离这一行的中心多远"：
+   * 后者会在整行明明装得下、一颗都没被挡住的时候，也把最边上那颗转掉、压暗，
+   * 静止状态看着就像坏了。改成按遮挡量算之后——
+   *   - 整行装得下：一颗都不动，全是正的；
+   *   - 装不下：只有真的越过左右边线的那几颗才顺着透视转开、淡掉。
+   */
+  private refreshChipFx(): void {
+    const viewW: number = this.chipViewW;
+    const out: ChipFx[] = [];
+    const n: number = this.chipGeos.length;
+    // 整行比视口宽出来的部分；<=0 表示全都能看见，那就没有可转的东西
+    const overflow: number = this.chipRowW - viewW;
+    if (viewW <= 0) {
+      // 视口还不知道多宽，先给个"没变形"的默认态
+      for (let i: number = 0; i < n; i++) {
+        out.push({ key: this.chipGeos[i].key, rot: 0, alpha: 1 });
+      }
+      this.chipFxs = out;
+      return;
+    }
+    for (let i: number = 0; i < n; i++) {
+      const geo: ChipGeo = this.chipGeos[i];
+      if (overflow <= 0.5) {
+        out.push({ key: geo.key, rot: 0, alpha: 1 });
+        continue;
+      }
+      const w: number = geo.w;
+      // 左边界是"排序"那一侧，右边界是屏幕边缘：分别量一下被它们盖掉多宽
+      let hiddenLeft: number = this.chipScrollX - geo.x;
+      let hiddenRight: number = (geo.x + w) - (this.chipScrollX + viewW);
+      if (hiddenLeft < 0) {
+        hiddenLeft = 0;
+      }
+      if (hiddenLeft > w) {
+        hiddenLeft = w;
+      }
+      if (hiddenRight < 0) {
+        hiddenRight = 0;
+      }
+      if (hiddenRight > w) {
+        hiddenRight = w;
+      }
+      let frac: number = w > 0 ? (hiddenLeft + hiddenRight) / w : 0;
+      if (frac > 1) {
+        frac = 1;
+      }
+      out.push({
+        key: geo.key,
+        // 往右滚出去（被右边切掉）转向一侧，往左没进"排序"里的转向另一侧
+        rot: w > 0 ? (hiddenRight - hiddenLeft) / w * 42 : 0,
+        // 遮挡越多掉得越快：刚压线时几乎看不出来，越往外越淡
+        alpha: 1 - 0.92 * Math.pow(frac, 1.6)
+      });
+    }
+    this.chipFxs = out;
+  }
+
+  /** 取某个胶囊此刻的变形量（几何还没量出来时是没变形的默认态） */
+  private chipFx(key: string): ChipFx {
+    for (let i: number = 0; i < this.chipFxs.length; i++) {
+      if (this.chipFxs[i].key === key) {
+        return this.chipFxs[i];
+      }
+    }
+    return { key: key, rot: 0, alpha: 1 };
+  }
+
   /** 切换排序方向（点箭头，或点当前已选中的那个排序胶囊） */
   private toggleSortDir(): void {
+    // 文案长短会变，几何位置重量一遍
+    this.resetChipGeos();
     animateTo({ duration: 260, curve: Curve.Friction }, () => {
       this.sortAsc = !this.sortAsc;
+      // 整组箭头翻半圈：两个三角在 X 轴上转着交接，"点亮的那一个"同步换手
+      this.sortFlip = this.sortFlip + 180;
     });
   }
 
@@ -712,20 +921,34 @@ struct Index {
                       .fontSize(12)
                       .fontColor(this.theme.sub)
                       .margin({ right: 2 })
-                    /* 正序 / 倒序：上下两个箭头，当前方向的那一个点亮。
-                       间距压成 -1，两个三角贴得更紧 */
+                    /* 正序 / 倒序：两个实心小三角，当前方向的那一个点亮。
+                       整组在切换时会绕 X 轴翻半圈，两个三角转着交接 */
                     Column() {
-                      Text('▲')
-                        .fontSize(9)
-                        .fontColor(this.sortAsc ? this.theme.primary : this.theme.sub)
+                      Polygon({ width: 10, height: 6 })
+                        .points([[0, 6], [5, 0], [10, 6]])
+                        .fill(this.sortAsc ? this.theme.primary : this.theme.sub)
+                        .strokeWidth(1.4)
+                        .stroke(this.sortAsc ? this.theme.primary : this.theme.sub)
+                        .strokeLineJoin(LineJoinStyle.Round)
                         .opacity(this.sortAsc ? 1 : 0.45)
-                      Text('▼')
-                        .fontSize(9)
-                        .fontColor(this.sortAsc ? this.theme.sub : this.theme.primary)
+                      Polygon({ width: 10, height: 6 })
+                        .points([[0, 0], [5, 6], [10, 0]])
+                        .fill(this.sortAsc ? this.theme.sub : this.theme.primary)
+                        .strokeWidth(1.4)
+                        .stroke(this.sortAsc ? this.theme.sub : this.theme.primary)
+                        .strokeLineJoin(LineJoinStyle.Round)
                         .opacity(this.sortAsc ? 0.45 : 1)
-                        .margin({ top: -1 })
+                        .margin({ top: 2 })
                     }
                     .alignItems(HorizontalAlign.Center)
+                    // 翻转量只在 toggleSortDir 的 animateTo（260ms Friction）里推进；
+                    // perspective 给一点透视，转的过程中才有"从平面里立起来"的厚度
+                    .rotate({
+                      x: 1, y: 0, z: 0,
+                      angle: this.sortFlip,
+                      centerX: '50%', centerY: '50%',
+                      perspective: 240
+                    })
                   }
                   .alignItems(VerticalAlign.Center)
                   // 左右各留 6 的内边距，再用 -6 的外边距顶回去：字的位置不动，热区变大
@@ -745,7 +968,7 @@ struct Index {
                     this.toggleSortDir();
                   })
                   // 胶囊多了会超出一屏，这里让整行可以横向滑动，"排序"两个字固定不动
-                  Scroll() {
+                  Scroll(this.chipScroller) {
                     Row() {
                       Text(this.statFav > 0 ? ('★ 收藏 ' + this.statFav) : '★ 收藏')
                         .fontSize(12)
@@ -757,6 +980,18 @@ struct Index {
                         .focusable(false)
                         .scale({ x: this.sc('favOnly'), y: this.sc('favOnly') })
                         .animation({ duration: 140, curve: Curve.EaseOut })
+                        // 立体转动写在 .animation 之后：它管不着这两项，
+                        // 于是每帧都直接落到终值，手指拨到哪儿胶囊就转到哪儿，不带惯性尾巴
+                        .rotate({
+                          y: 1, z: 0,
+                          angle: this.chipFx('fav').rot,
+                          centerX: '50%', centerY: '50%',
+                          perspective: 300
+                        })
+                        .opacity(this.chipFx('fav').alpha)
+                        .onAreaChange((_o: Area, n: Area) => {
+                          this.recordChipGeo('fav', n);
+                        })
                         .onTouch((e: TouchEvent) => {
                           this.onPress(e, 'favOnly');
                         })
@@ -774,6 +1009,18 @@ struct Index {
                           .focusable(false)
                           .scale({ x: this.sc('sort:' + opt.type), y: this.sc('sort:' + opt.type) })
                           .animation({ duration: 140, curve: Curve.EaseOut })
+                          // 和收藏胶囊同一套：转角由它离这一行中心多远决定，
+                          // 拨到左右边缘就顺着透视转到后头去了
+                          .rotate({
+                            y: 1, z: 0,
+                            angle: this.chipFx('sort:' + opt.type).rot,
+                            centerX: '50%', centerY: '50%',
+                            perspective: 300
+                          })
+                          .opacity(this.chipFx('sort:' + opt.type).alpha)
+                          .onAreaChange((_o: Area, n: Area) => {
+                            this.recordChipGeo('sort:' + opt.type, n);
+                          })
                           .onTouch((e: TouchEvent) => {
                             this.onPress(e, 'sort:' + opt.type);
                           })
@@ -790,12 +1037,28 @@ struct Index {
                       }, (opt: SortOption) => opt.key)
                     }
                     .alignItems(VerticalAlign.Center)
+                    .onAreaChange((_o: Area, n: Area) => {
+                      // 行首的全局横坐标：每个胶囊的静态位置都以它为起点
+                      this.chipRowX = this.lenOf(n.globalPosition.x);
+                      this.chipRowW = this.lenOf(n.width);
+                      this.chipRowReady = true;
+                      this.refreshChipFx();
+                    })
                   }
                   .scrollable(ScrollDirection.Horizontal)
                   .scrollBar(BarState.Off)
                   .edgeEffect(EdgeEffect.Spring)
                   .layoutWeight(1)
                   .align(Alignment.Start)
+                  .onAreaChange((_o: Area, n: Area) => {
+                    this.chipViewW = this.lenOf(n.width);
+                    this.refreshChipFx();
+                  })
+                  .onDidScroll(() => {
+                    // 横向滚动一寸就重算一次：谁在中间谁就正面朝人，两侧的顺着透视转开
+                    this.chipScrollX = this.chipScroller.currentOffset().xOffset;
+                    this.refreshChipFx();
+                  })
                 }
                 .width('100%')
                 .padding({ top: 14, bottom: 10 })
@@ -955,9 +1218,11 @@ struct Index {
         .width('100%')
         .padding({ left: 12, right: 12, top: 6, bottom: 6 })
         .linearGradient({ angle: 180, colors: [[this.theme.bgTop, 0.0], [this.theme.bg, 1.0]] })
+        // 出现 / 消失都作用在这一整层上（连背后的渐变一起淡），不再只动里头那张卡。
+        // 早先把过渡挂在卡片上，外面这层深色渐变是硬切出来 / 硬切收回的，
+        // 滑回顶部时会先留一帧深色的横条再消失，看着像闪过一道黑框
         .transition(
           TransitionEffect.OPACITY
-            .combine(TransitionEffect.move(TransitionEdge.TOP))
             .animation({ duration: 240, curve: Curve.EaseOut })
         )
       }
@@ -967,10 +1232,20 @@ struct Index {
       if (this.showTop) {
         Column() {
           Stack() {
+            // 点击时向四周扩出去的一圈光晕：从圆钮那么大扩到两倍、同时褪掉。
+            // 这里千万不能裁剪，否则扩出圆钮边界的那截会被切一刀
+            Circle({ width: 46, height: 46 })
+              .fill(this.theme.primary)
+              .opacity(this.topRingAlpha)
+              .scale({ x: this.topRingScale, y: this.topRingScale })
+              .zIndex(0)
             Image($r('app.media.ic_top'))
               .width(20)
               .height(20)
               .objectFit(ImageFit.Contain)
+              .opacity(this.topIconAlpha)
+              .translate({ y: this.topIconY })
+              .zIndex(1)
           }
           .width(46)
           .height(46)
@@ -984,7 +1259,7 @@ struct Index {
             this.onTopPress(e);
           })
           .onClick(() => {
-            this.scrollToTop();
+            this.launchTopAction();
           })
         }
         .width('100%')
