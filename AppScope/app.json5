@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "shebeizhang.1.0.1",
     "vendor": "example",
-    "versionCode": 1710000,
-    "versionName": "1.7.1",
+    "versionCode": 1800000,
+    "versionName": "1.8.0",
     "icon": "$media:layered_image",
     "label": "$string:app_name"
   }
