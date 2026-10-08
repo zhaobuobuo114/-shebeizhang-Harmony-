@@ -101,6 +101,8 @@ struct Index {
 
   // 排序方向切换时，整个上下箭头组绕 X 轴翻半圈
   @State sortFlip: number = 0;
+  // 翻过半圈之后，写在上面的那个三角其实落到了下面：配色按"翻完之后谁在上面"给
+  @State sortFlipped: boolean = false;
 
   // 排序胶囊的立体转动
   /** Scroll 视口宽度：判断整行装不装得下、以及右边被切掉多少 */
@@ -569,6 +571,18 @@ struct Index {
     return { key: key, rot: 0, alpha: 1 };
   }
 
+  /**
+   * 上下三角该不该点亮。
+   * 整组绕 X 轴翻过半圈以后，两个三角是互换位置的：写在上头的那个会转到下头去，
+   * 顺带把自己镜像成朝下的形状。所以"点亮哪一个"要看翻完之后谁落在上面，
+   * 而不是看谁被写在前面 —— 不然无论切几次方向，亮着的总是下面那一个。
+   */
+  private arrowOn(up: boolean): boolean {
+    const upOnTop: boolean = !this.sortFlipped;
+    const onTop: boolean = up ? upOnTop : !upOnTop;
+    return onTop === this.sortAsc;
+  }
+
   /** 切换排序方向（点箭头，或点当前已选中的那个排序胶囊） */
   private toggleSortDir(): void {
     // 文案长短会变，几何位置重量一遍
@@ -577,6 +591,8 @@ struct Index {
       this.sortAsc = !this.sortAsc;
       // 整组箭头翻半圈：两个三角在 X 轴上转着交接，"点亮的那一个"同步换手
       this.sortFlip = this.sortFlip + 180;
+      // 布尔量在 animateTo 里是立刻生效的，配色因此能整段 260ms 渐变到翻完后的目标
+      this.sortFlipped = !this.sortFlipped;
     });
   }
 
@@ -926,18 +942,18 @@ struct Index {
                     Column() {
                       Polygon({ width: 10, height: 6 })
                         .points([[0, 6], [5, 0], [10, 6]])
-                        .fill(this.sortAsc ? this.theme.primary : this.theme.sub)
+                        .fill(this.arrowOn(true) ? this.theme.primary : this.theme.sub)
                         .strokeWidth(1.4)
-                        .stroke(this.sortAsc ? this.theme.primary : this.theme.sub)
+                        .stroke(this.arrowOn(true) ? this.theme.primary : this.theme.sub)
                         .strokeLineJoin(LineJoinStyle.Round)
-                        .opacity(this.sortAsc ? 1 : 0.45)
+                        .opacity(this.arrowOn(true) ? 1 : 0.45)
                       Polygon({ width: 10, height: 6 })
                         .points([[0, 0], [5, 6], [10, 0]])
-                        .fill(this.sortAsc ? this.theme.sub : this.theme.primary)
+                        .fill(this.arrowOn(false) ? this.theme.primary : this.theme.sub)
                         .strokeWidth(1.4)
-                        .stroke(this.sortAsc ? this.theme.sub : this.theme.primary)
+                        .stroke(this.arrowOn(false) ? this.theme.primary : this.theme.sub)
                         .strokeLineJoin(LineJoinStyle.Round)
-                        .opacity(this.sortAsc ? 0.45 : 1)
+                        .opacity(this.arrowOn(false) ? 1 : 0.45)
                         .margin({ top: 2 })
                     }
                     .alignItems(HorizontalAlign.Center)
