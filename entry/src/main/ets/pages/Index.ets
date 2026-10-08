@@ -10,6 +10,7 @@ import { common } from '@kit.AbilityKit';
 import { SummaryCard } from '../components/SummaryCard';
 import { ChartCard } from '../components/ChartCard';
 import { DeviceCard } from '../components/DeviceCard';
+import { PrivacyDialog } from '../components/PrivacyDialog';
 
 interface SortOption {
   label: string;
@@ -83,6 +84,9 @@ struct Index {
   // 删除确认
   @State pendingDeleteId: string = '';
 
+  // 首次启动的条款确认：没勾选同意之前，不把本机数据读进界面
+  @State showPrivacy: boolean = false;
+
   // 空态图标的呼吸动画
   @State bob: boolean = false;
 
@@ -140,20 +144,33 @@ struct Index {
 
   aboutToAppear(): void {
     this.theme = themeOf(DeviceStore.loadDark());
-    this.deviceList = DeviceStore.load();
-    this.refreshStats();
+    // 第一次进来先确认条款，同意之后才读本机数据
+    this.showPrivacy = !DeviceStore.loadAgreed();
+    if (!this.showPrivacy) {
+      this.deviceList = DeviceStore.load();
+      this.refreshStats();
+    }
     setTimeout(() => {
       this.bob = true;
     }, 400);
   }
 
   onPageShow(): void {
+    if (this.showPrivacy) {
+      // 条款还没确认，这一屏不做任何数据刷新
+      return;
+    }
     // 回到前台时对齐一次磁盘数据（跨天时天数也会重算）
     const disk: DeviceItem[] = DeviceStore.load();
     if (disk.length !== this.deviceList.length) {
       this.deviceList = disk;
     }
     this.refreshStats();
+  }
+
+  /** 条款还没确认时，返回键不该把弹窗关掉 */
+  onBackPress(): boolean {
+    return this.showPrivacy;
   }
 
   /* ------------------------------ 计算 ------------------------------ */
@@ -1656,6 +1673,26 @@ struct Index {
         .height('100%')
         .backgroundColor(this.theme.scrim)
         .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+      }
+
+      if (this.showPrivacy) {
+        PrivacyDialog({
+          theme: this.theme,
+          onAgree: () => {
+            DeviceStore.saveAgreed(true);
+            this.showPrivacy = false;
+            this.deviceList = DeviceStore.load();
+            this.refreshStats();
+          },
+          onExit: () => {
+            try {
+              const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+              ctx.terminateSelf();
+            } catch (e) {
+              // 结束不掉就留在确认页，不做别的处理
+            }
+          }
+        })
       }
     }
     .width('100%')
