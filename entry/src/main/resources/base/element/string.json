@@ -11,6 +11,34 @@
     {
       "name": "EntryAbility_label",
       "value": "设备账"
+    },
+    {
+      "name": "privacy_title",
+      "value": "欢迎使用设备账"
+    },
+    {
+      "name": "privacy_body",
+      "value": "设备账把你买的每一台设备都记在本机：不联网、不上传、不读取任何与设备无关的个人信息。开始前，请先阅读并同意下面两份条款。"
+    },
+    {
+      "name": "privacy_link_policy",
+      "value": "《隐私条款》"
+    },
+    {
+      "name": "privacy_link_terms",
+      "value": "《服务条款》"
+    },
+    {
+      "name": "privacy_check",
+      "value": "我已阅读并同意上述条款"
+    },
+    {
+      "name": "privacy_agree",
+      "value": "同意并进入"
+    },
+    {
+      "name": "privacy_exit",
+      "value": "不同意，退出应用"
     }
   ]
 }
