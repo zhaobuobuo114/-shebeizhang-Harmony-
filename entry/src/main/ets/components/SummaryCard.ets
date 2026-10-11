@@ -1,5 +1,6 @@
 import { AppTheme, LIGHT_THEME } from '../utils/Theme';
 import { Fmt } from '../utils/Format';
+import { Badges } from '../model/Badge';
 
 /**
  * 顶部总览卡。
@@ -15,6 +16,13 @@ export struct SummaryCard {
   @Prop @Watch('onData') bestName: string = '';
   @Prop @Watch('onData') bestAvg: number = 0;
   @Prop theme: AppTheme = LIGHT_THEME;
+  /** 卡内那颗勋章胶囊：已点亮数 / 总数，点击回调由 Index 注入 */
+  @Prop badgeCount: number = 0;
+  @Prop badgeTotal: number = 14;
+  onOpenBadges: () => void = () => {
+  };
+
+  @State pillPressed: boolean = false;
 
   @State dTotal: number = 0;
   @State dAvg: number = 0;
@@ -31,15 +39,26 @@ export struct SummaryCard {
     this.play();
   }
 
+  private enterId: number = -1;
+
   aboutToAppear(): void {
     this.dTotal = 0;
     this.dAvg = 0;
-    setTimeout(() => {
+    this.enterId = setTimeout(() => {
+      this.enterId = -1;
       animateTo({ duration: 900, curve: Curve.EaseOut }, () => {
         this.dTotal = this.total;
         this.dAvg = this.avg;
       });
     }, 60);
+  }
+
+  /** 卡片可能在延时落定前就随列表销毁，句柄不摘就会把动画打在已经不存在的组件上 */
+  aboutToDisappear(): void {
+    if (this.enterId >= 0) {
+      clearTimeout(this.enterId);
+      this.enterId = -1;
+    }
   }
 
   build() {
@@ -124,6 +143,43 @@ export struct SummaryCard {
       .width('100%')
       .padding(18)
       .alignItems(HorizontalAlign.Start)
+
+      // 里程碑勋章入口：总览卡右侧那块空档，与安卓版同位置同观感。
+      // 用整宽 Row 右对齐 + position 定位，避免写死 x 坐标（卡片宽度随屏宽变）
+      Row() {
+        Row() {
+          Image(Badges.MEDAL)
+            .width(16)
+            .height(16)
+          Text(this.badgeCount + ' / ' + this.badgeTotal)
+            .fontSize(11)
+            .fontColor('#FFFFFF')
+            .margin({ left: 5 })
+          Text('›')
+            .fontSize(13)
+            .fontColor('#D8E3FF')
+            .margin({ left: 2 })
+        }
+        .backgroundColor('#26FFFFFF')
+        .borderRadius(10)
+        .padding({ left: 9, top: 4, right: 7, bottom: 4 })
+        .scale({ x: this.pillPressed ? 0.92 : 1, y: this.pillPressed ? 0.92 : 1 })
+        .animation({ duration: 140, curve: Curve.EaseOut })
+        .onClick(() => {
+          this.onOpenBadges();
+        })
+        .onTouch((e: TouchEvent) => {
+          if (e.type === TouchType.Down) {
+            this.pillPressed = true;
+          } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+            this.pillPressed = false;
+          }
+        })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.End)
+      .padding({ right: 18 })
+      .position({ x: 0, y: 58 })
     }
     .width('100%')
     .borderRadius(20)

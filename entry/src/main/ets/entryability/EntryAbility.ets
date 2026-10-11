@@ -2,6 +2,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { DeviceStore } from '../utils/DeviceStore';
+import { BackupStore } from '../utils/BackupStore';
 
 const DOMAIN: number = 0x0000;
 
@@ -26,6 +27,8 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     DeviceStore.init(this.context);
+    // 自动备份与导出都要写应用私有目录，这里先把目录的入口交给它
+    BackupStore.init(this.context);
 
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {

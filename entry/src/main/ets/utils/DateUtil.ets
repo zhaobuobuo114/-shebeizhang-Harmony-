@@ -27,22 +27,70 @@ export class DateUtil {
     return new Date(y, m - 1, d);
   }
 
-  /** 从 dateStr 到今天，相差多少个自然日（今天为 0，未来返回 0） */
+  /**
+   * 某一天在本地时区的"日序号"：取当天正午的时间戳整除一天毫秒数。
+   * 与安卓版 DateUtil.epochDay 同构——正午离夏令时切换点最远，整天相减不会
+   * 出现 ±1 天；整除用 trunc 而不是 floor，也是为跟安卓的 Long 除法对齐。
+   */
+  private static epochDay(year: number, month: number, day: number): number {
+    const d: Date = new Date(year, month - 1, day, 12, 0, 0, 0);
+    return Math.trunc(d.getTime() / DateUtil.DAY_MS);
+  }
+
+  /** 从 dateStr 到今天，相差多少个自然日（今天为 0，未来或读不懂的串返回 0） */
   static daysSince(dateStr: string): number {
-    const target: number = DateUtil.parse(dateStr).getTime();
+    const target: Date = DateUtil.parse(dateStr);
+    if (isNaN(target.getTime())) {
+      return 0;
+    }
     const now: Date = new Date();
-    const todayStart: number = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const diff: number = Math.floor((todayStart - target) / DateUtil.DAY_MS);
+    const diff: number = DateUtil.epochDay(now.getFullYear(), now.getMonth() + 1, now.getDate())
+      - DateUtil.epochDay(target.getFullYear(), target.getMonth() + 1, target.getDate());
     return diff > 0 ? diff : 0;
   }
 
-  /** 简易合法性校验 */
-  static isValid(dateStr: string): boolean {
-    if (dateStr.length !== 10) {
-      return false;
+  /**
+   * 把任意写法的日期修成标准串：'2026-1-5' 补零成 '2026-01-05'，
+   * '2025-02-30' 这类不存在的一天、以及彻底读不懂的串一律修成今天。
+   * 导入外部文件与读历史数据都走这里，保证落进列表的日期一定是规范串，
+   * 也让'2026-1-5'这种老数据不至于丢掉购买日期（早前安卓会直接当今天）。
+   */
+  static sanitize(dateStr: string): string {
+    const parts: string[] = dateStr.split('-');
+    if (parts.length === 3) {
+      const y: number = parseInt(parts[0], 10);
+      const m: number = parseInt(parts[1], 10);
+      const d: number = parseInt(parts[2], 10);
+      if (!isNaN(y) && !isNaN(m) && !isNaN(d) && y >= 1900 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+        const back: Date = new Date(y, m - 1, d);
+        if (back.getFullYear() === y && back.getMonth() === m - 1 && back.getDate() === d) {
+          return DateUtil.format(y, m, d);
+        }
+      }
     }
-    const d: Date = DateUtil.parse(dateStr);
-    return DateUtil.format(d.getFullYear(), d.getMonth() + 1, d.getDate()) === dateStr;
+    return DateUtil.today();
+  }
+
+  /** 时间戳 -> yyyy.MM.dd（勋章获得日期用） */
+  static formatStamp(at: number): string {
+    if (at <= 0) {
+      return '';
+    }
+    const d: Date = new Date(at);
+    return d.getFullYear() + '.' + DateUtil.pad(d.getMonth() + 1) + '.' + DateUtil.pad(d.getDate());
+  }
+
+  /** 时间戳 -> 便于排序与比对的时间串，如 10-09 14:30（备份列表用） */
+  static formatClock(at: number): string {
+    if (at <= 0) {
+      return '--';
+    }
+    const d: Date = new Date(at);
+    const now: Date = new Date();
+    const dayPart: string = d.getFullYear() === now.getFullYear()
+      ? DateUtil.pad(d.getMonth() + 1) + '-' + DateUtil.pad(d.getDate())
+      : d.getFullYear() + '-' + DateUtil.pad(d.getMonth() + 1) + '-' + DateUtil.pad(d.getDate());
+    return dayPart + ' ' + DateUtil.pad(d.getHours()) + ':' + DateUtil.pad(d.getMinutes());
   }
 
   /** 把天数说成人话：如 3 年 2 个月 */

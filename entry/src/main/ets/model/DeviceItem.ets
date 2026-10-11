@@ -60,20 +60,35 @@ export class DeviceCalc {
       '#' + item.category + '#' + item.note;
   }
 
-  /** 兜底清洗：把历史脏数据规整成合法结构 */
+  /**
+   * 兜底清洗：把历史脏数据规整成合法结构。
+   *
+   * 导入的文件来自外部，字段类型未必可信——null、数字写成字符串、日期不补零
+   * 都可能出现在 JSON 里，而 ArkTS 的 `as` 只是骗过编译器、不做任何运行时转换，
+   * 脏值一旦进列表就会一路扩散（日均变 NaN、汇总变 ¥NaN、null.split() 直接抛）。
+   * 所以这里逐字段做真实的类型与取值收敛，保证出门的都是合法 DeviceItem。
+   */
   static normalize(raw: RawDevice): DeviceItem {
-    const name: string = raw.name === undefined ? '' : raw.name;
-    const price: number = raw.price === undefined ? 0 : raw.price;
-    const buyDate: string = raw.buyDate === undefined ? DateUtil.today() : raw.buyDate;
-    const created: number = raw.createdAt === undefined ? 0 : raw.createdAt;
-    const id: string = raw.id === undefined ? ('d' + created + Math.floor(Math.random() * 10000)) : raw.id;
+    const name: string = typeof raw.name === 'string' ? raw.name : '';
+    const note: string = typeof raw.note === 'string' ? raw.note : '';
+    const categoryKey: string = typeof raw.category === 'string' ? raw.category : '';
+    const rawId: string = typeof raw.id === 'string' ? raw.id : '';
+    const rawDate: string = typeof raw.buyDate === 'string' ? raw.buyDate : '';
+
+    const priceNum: number = typeof raw.price === 'number' ? raw.price : Number(raw.price);
+    // 录入面板本来就禁止 0 与负数，负价只可能来自被改坏的文件；钳成 0 免得把扇形图算出负百分比
+    const price: number = isFinite(priceNum) && priceNum > 0 ? priceNum : 0;
+
+    const createdNum: number = typeof raw.createdAt === 'number' ? raw.createdAt : Number(raw.createdAt);
+    const created: number = isFinite(createdNum) && createdNum > 0 ? Math.trunc(createdNum) : 0;
+
     const item: DeviceItem = {
-      id: id,
+      id: rawId.length > 0 ? rawId : ('d' + created + Math.floor(Math.random() * 10000)),
       name: name,
       price: price,
-      buyDate: buyDate,
-      category: resolveKind(raw.category === undefined ? '' : raw.category),
-      note: raw.note === undefined ? '' : raw.note,
+      buyDate: DateUtil.sanitize(rawDate),
+      category: resolveKind(categoryKey),
+      note: note,
       // 老版本数据没有 favorite 字段，缺省就是未收藏
       favorite: raw.favorite === true,
       createdAt: created

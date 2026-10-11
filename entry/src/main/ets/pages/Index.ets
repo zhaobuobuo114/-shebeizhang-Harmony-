@@ -7,10 +7,19 @@ import { Fmt } from '../utils/Format';
 import { AppTheme, LIGHT_THEME, themeOf } from '../utils/Theme';
 import { applyColorMode } from '../utils/SystemUi';
 import { common } from '@kit.AbilityKit';
+import { promptAction } from '@kit.ArkUI';
+import { BackupFile, BackupStore, Snapshot } from '../utils/BackupStore';
+import { BadgeDef, Badges } from '../model/Badge';
+import { TrashItem } from '../model/TrashItem';
 import { SummaryCard } from '../components/SummaryCard';
 import { ChartCard } from '../components/ChartCard';
 import { DeviceCard } from '../components/DeviceCard';
 import { PrivacyDialog } from '../components/PrivacyDialog';
+import { DataSheet } from '../components/DataSheet';
+import { TrashSheet } from '../components/TrashSheet';
+import { BadgeCell, BadgeWall } from '../components/BadgeWall';
+import { BadgeCelebration, CelebrationItem } from '../components/BadgeCelebration';
+import { UndoBar } from '../components/UndoBar';
 
 interface SortOption {
   label: string;
@@ -84,6 +93,28 @@ struct Index {
   // 删除确认
   @State pendingDeleteId: string = '';
 
+  // 回收站：删掉的设备在这里留满保留期，期间可以原样恢复
+  @State trashList: TrashItem[] = [];
+  @State showTrash: boolean = false;
+
+  // 勋章：判定状态本身不参与渲染，界面用一份格子数组
+  private badgeState: Map<string, number> = new Map<string, number>();
+  @State badgeCellList: BadgeCell[] = [];
+  @State showBadges: boolean = false;
+  // 达成弹屏：本次新点亮的几枚，多枚可以在弹屏里左右划着看
+  @State showCelebration: boolean = false;
+  @State celebrationItems: CelebrationItem[] = [];
+
+  // 数据与备份面板（导出 / 导入 / 自动备份）
+  @State showDataSheet: boolean = false;
+  @State backups: BackupFile[] = [];
+
+  // 删除之后的撤销条
+  @State showUndo: boolean = false;
+  @State undoText: string = '';
+  /** 撤销条管着的这台设备，时间到了就作废 */
+  private undoTrash: TrashItem | undefined = undefined;
+
   // 首次启动的条款确认：没勾选同意之前，不把本机数据读进界面
   @State showPrivacy: boolean = false;
 
@@ -127,9 +158,8 @@ struct Index {
   // 按压动效：记录当前被按下的控件标识
   @State pressedKey: string = '';
 
-  private todayStr: string = DateUtil.today();
-  /** 整页列表的滚动控制器，回顶部要用 */
-  private scroller: Scroller = new Scroller();
+  /** 整页列表的滚动控制器，回顶部要用；用 ListScroller 才拿得到 closeAllSwipeActions */
+  private scroller: ListScroller = new ListScroller();
   /** 排序胶囊那一行的横向滚动控制器：用它读偏移，好把胶囊转到该有的角度 */
   private chipScroller: Scroller = new Scroller();
   /** 当前滚动位置（用于算回顶部的时长） */
@@ -139,6 +169,8 @@ struct Index {
   private topTimer: number = -1;
   /** "起飞"特效里负责补回箭头的那一步 */
   private topLaunch: number = -1;
+  /** 空态图标呼吸的起手延时 */
+  private bobTimer: number = -1;
 
   /* ------------------------------ 生命周期 ------------------------------ */
 
@@ -148,11 +180,31 @@ struct Index {
     this.showPrivacy = !DeviceStore.loadAgreed();
     if (!this.showPrivacy) {
       this.deviceList = DeviceStore.load();
+      this.trashList = DeviceStore.loadTrash(BackupStore.KEEP_DAYS);
+      this.badgeState = DeviceStore.loadBadges();
       this.refreshStats();
+      this.checkBadges(false);
     }
-    setTimeout(() => {
+    this.bobTimer = setTimeout(() => {
+      this.bobTimer = -1;
       this.bob = true;
     }, 400);
+  }
+
+  /** 页面销毁时把还在排队的动画一次性清掉，否则回调会打在已经没了的组件上 */
+  aboutToDisappear(): void {
+    if (this.bobTimer !== -1) {
+      clearTimeout(this.bobTimer);
+      this.bobTimer = -1;
+    }
+    if (this.topTimer !== -1) {
+      clearTimeout(this.topTimer);
+      this.topTimer = -1;
+    }
+    if (this.topLaunch !== -1) {
+      clearTimeout(this.topLaunch);
+      this.topLaunch = -1;
+    }
   }
 
   onPageShow(): void {
@@ -165,12 +217,47 @@ struct Index {
     if (disk.length !== this.deviceList.length) {
       this.deviceList = disk;
     }
+    // 跨天之后回收站里可能有记录到期，重读一次顺手清掉
+    this.trashList = DeviceStore.loadTrash(BackupStore.KEEP_DAYS);
     this.refreshStats();
   }
 
-  /** 条款还没确认时，返回键不该把弹窗关掉 */
+  /**
+   * 返回键：先把最上层的弹层关掉，关完了才让系统退出应用。
+   * 整页是单页面 + Stack 覆盖层，不拦的话一按返回就退到桌面、弹层还原地挂着，
+   * 再进来时面板还开着，用户以为是应用卡住了。
+   */
   onBackPress(): boolean {
-    return this.showPrivacy;
+    if (this.showPrivacy) {
+      // 条款还没确认，这一屏不给返回
+      return true;
+    }
+    if (this.showCelebration) {
+      // 庆祝弹屏压在最上层，返回键先关它
+      this.showCelebration = false;
+      this.celebrationItems = [];
+      return true;
+    }
+    if (this.pendingDeleteId.length > 0) {
+      this.closeDeleteConfirm();
+      return true;
+    }
+    if (this.showEditor) {
+      this.closeEditor();
+      return true;
+    }
+    if (this.showTrash || this.showBadges) {
+      // 回收站与勋章墙是从"数据与备份"里点进去的，退回上一层就是那里
+      this.showTrash = false;
+      this.showBadges = false;
+      this.openDataSheet();
+      return true;
+    }
+    if (this.showDataSheet) {
+      this.showDataSheet = false;
+      return true;
+    }
+    return false;
   }
 
   /* ------------------------------ 计算 ------------------------------ */
@@ -709,9 +796,23 @@ struct Index {
     DeviceStore.saveDark(next.dark);
   }
 
+  /** 按 id 回查在册列表里最新的那份，找不到返回 undefined */
+  private findLive(id: string): DeviceItem | undefined {
+    for (let i: number = 0; i < this.deviceList.length; i++) {
+      if (this.deviceList[i].id === id) {
+        return this.deviceList[i];
+      }
+    }
+    return undefined;
+  }
+
   private openEditor(item: DeviceItem | undefined): void {
     this.errMsg = '';
-    if (item === undefined) {
+    // 传进来的可能是刚才点过星标之前的旧对象：ForEach 的 key 故意不含 favorite，
+    // 那条卡片组件不会重跑，闭包里的 item 还停在收藏前的样子。
+    // 一律按 id 回查在册的最新一份，否则面板会把旧收藏状态回显、一保存就把刚点的收藏抹掉。
+    const current: DeviceItem | undefined = item === undefined ? undefined : (this.findLive(item.id) ?? item);
+    if (current === undefined) {
       this.editId = '';
       this.editName = '';
       this.editPrice = '';
@@ -720,13 +821,13 @@ struct Index {
       this.editFavorite = false;
       this.editDate = new Date();
     } else {
-      this.editId = item.id;
-      this.editName = item.name;
-      this.editPrice = item.price.toString();
-      this.editKind = item.category;
-      this.editNote = item.note;
-      this.editFavorite = item.favorite;
-      this.editDate = DateUtil.parse(item.buyDate);
+      this.editId = current.id;
+      this.editName = current.name;
+      this.editPrice = current.price.toString();
+      this.editKind = current.category;
+      this.editNote = current.note;
+      this.editFavorite = current.favorite;
+      this.editDate = DateUtil.parse(current.buyDate);
     }
     // 类型区默认收成一行；选中的类型不在第一行就自动展开
     this.ensureKindVisible();
@@ -740,6 +841,14 @@ struct Index {
     animateTo({ duration: 240, curve: Curve.EaseIn }, () => {
       this.showEditor = false;
     });
+  }
+
+  /** 关掉删除确认，同时把还拨开的左滑条收回——否则红色删除按钮会一直露在那一行上 */
+  private closeDeleteConfirm(): void {
+    animateTo({ duration: 180, curve: Curve.EaseIn }, () => {
+      this.pendingDeleteId = '';
+    });
+    this.scroller.closeAllSwipeActions();
   }
 
   private onSave(): void {
@@ -760,7 +869,7 @@ struct Index {
       this.errMsg = '请填写有效的购买价格';
       return;
     }
-    if (buyDate > this.todayStr) {
+    if (buyDate > DateUtil.today()) {
       this.errMsg = '购买日期不能晚于今天';
       return;
     }
@@ -795,9 +904,12 @@ struct Index {
       }
     }
 
+    // 覆盖写库之前留一份快照；勋章在落库之后重新判定一次
+    BackupStore.maybeBackup(this.currentSnapshot());
     this.deviceList = list;
     DeviceStore.save(list);
     this.refreshStats();
+    this.checkBadges(true);
     this.closeEditor();
   }
 
@@ -824,6 +936,8 @@ struct Index {
     this.deviceList = list;
     DeviceStore.save(list);
     this.refreshStats();
+    // 收藏数本身就是勋章条件，改完顺手判一次
+    this.checkBadges(true);
   }
 
   /** 只看收藏：筛选 + 立刻把列表滚回顶部（不然筛完停在半空很奇怪） */
@@ -839,23 +953,266 @@ struct Index {
     }
   }
 
+  /** 确认删除：设备不直接抹掉，先移进回收站，同时弹一条撤销 */
   private confirmDelete(): void {
     const id: string = this.pendingDeleteId;
     if (id.length === 0) {
       return;
     }
+    const target: DeviceItem | undefined = this.findById(id);
+    animateTo({ duration: 200, curve: Curve.EaseIn }, () => {
+      this.pendingDeleteId = '';
+    });
+    if (target === undefined) {
+      return;
+    }
+
+    // 大动作之前先留一份底，真删错了还有回滚的余地
+    BackupStore.maybeBackup(this.currentSnapshot());
+
     const list: DeviceItem[] = [];
     for (let i: number = 0; i < this.deviceList.length; i++) {
       if (this.deviceList[i].id !== id) {
         list.push(this.deviceList[i]);
       }
     }
+    const trashed: TrashItem = { item: target, deletedAt: Date.now() };
     this.deviceList = list;
+    this.trashList = [trashed].concat(this.trashList);
     DeviceStore.save(list);
+    DeviceStore.saveTrash(this.trashList);
     this.refreshStats();
-    animateTo({ duration: 200, curve: Curve.EaseIn }, () => {
-      this.pendingDeleteId = '';
+
+    this.undoTrash = trashed;
+    this.undoText = '已删除「' + this.nameOf(target) + '」，进了回收站';
+    this.showUndo = true;
+  }
+
+  /** 点撤销条上的「撤销」：把刚删的那台原样放回去 */
+  private undoDelete(): void {
+    const t: TrashItem | undefined = this.undoTrash;
+    this.showUndo = false;
+    this.undoTrash = undefined;
+    if (t === undefined) {
+      return;
+    }
+    this.restoreFromTrash(t.item.id);
+  }
+
+  /* ------------------------------ 回收站 ------------------------------ */
+
+  /** 原样放回设备列表 */
+  private restoreFromTrash(id: string): void {
+    const idx: number = this.findTrashIndex(id);
+    if (idx < 0) {
+      return;
+    }
+    // 同 id 的设备已经在册（多半是跨端合并留下的），再塞一次列表里就有两条同 id：
+    // 收藏会整组串号、汇总台数双算、下次合并还会静默丢一条。这里只把它从回收站清掉。
+    for (let i: number = 0; i < this.deviceList.length; i++) {
+      if (this.deviceList[i].id === id) {
+        const restOnly: TrashItem[] = this.trashList.slice();
+        restOnly.splice(idx, 1);
+        this.trashList = restOnly;
+        DeviceStore.saveTrash(restOnly);
+        this.toast('这台设备已经在列表里了');
+        return;
+      }
+    }
+    const t: TrashItem = this.trashList[idx];
+    const list: DeviceItem[] = this.deviceList.slice();
+    list.push(t.item);
+    const rest: TrashItem[] = this.trashList.slice();
+    rest.splice(idx, 1);
+    this.deviceList = list;
+    this.trashList = rest;
+    DeviceStore.save(list);
+    DeviceStore.saveTrash(rest);
+    this.refreshStats();
+    this.checkBadges(false);
+  }
+
+  /** 彻底删除：删掉之后找不回来 */
+  private deleteForever(id: string): void {
+    const rest: TrashItem[] = [];
+    for (let i: number = 0; i < this.trashList.length; i++) {
+      if (this.trashList[i].item.id !== id) {
+        rest.push(this.trashList[i]);
+      }
+    }
+    this.trashList = rest;
+    DeviceStore.saveTrash(rest);
+  }
+
+  private clearTrash(): void {
+    this.trashList = [];
+    DeviceStore.saveTrash([]);
+  }
+
+  private findTrashIndex(id: string): number {
+    for (let i: number = 0; i < this.trashList.length; i++) {
+      if (this.trashList[i].item.id === id) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private nameOf(item: DeviceItem): string {
+    return item.name.length > 0 ? item.name : '未命名';
+  }
+
+  /* ------------------------------ 勋章 ------------------------------ */
+
+  /** 勋章只增不减：达成即点亮并记下时间，之后数字回落也不熄灭 */
+  private checkBadges(announce: boolean): void {
+    const fresh: BadgeDef[] = Badges.evaluate(this.deviceList, this.badgeState);
+    this.refreshBadgeCells();
+    if (fresh.length === 0) {
+      return;
+    }
+    DeviceStore.saveBadges(this.badgeState);
+    this.refreshBadgeCells();
+    if (announce) {
+      // 达成反馈只走弹屏这一条路径，不再叠一条 Toast（与安卓版一致）
+      const items: CelebrationItem[] = [];
+      for (let i: number = 0; i < fresh.length; i++) {
+        items.push({
+          id: fresh[i].id,
+          name: fresh[i].name,
+          dateText: Badges.dateText(this.badgeState.get(fresh[i].id) ?? 0),
+          icon: fresh[i].icon
+        });
+      }
+      this.celebrationItems = items;
+      this.showCelebration = true;
+    }
+  }
+
+  /** 把判定状态摊平成界面能直接渲染的格子数组 */
+  private refreshBadgeCells(): void {
+    const cells: BadgeCell[] = [];
+    for (let i: number = 0; i < Badges.ALL.length; i++) {
+      const def = Badges.ALL[i];
+      const at: number | undefined = this.badgeState.get(def.id);
+      cells.push({
+        id: def.id,
+        name: def.name,
+        desc: def.desc,
+        icon: def.icon,
+        at: at === undefined ? 0 : at
+      });
+    }
+    this.badgeCellList = cells;
+  }
+
+  private badgeUnlockedCount(): number {
+    let n: number = 0;
+    for (let i: number = 0; i < this.badgeCellList.length; i++) {
+      if (this.badgeCellList[i].at > 0) {
+        n += 1;
+      }
+    }
+    return n;
+  }
+
+  /* ------------------------------ 导出 / 导入 / 备份 ------------------------------ */
+
+  private currentSnapshot(): Snapshot {
+    return {
+      devices: this.deviceList.slice(),
+      recycle: this.trashList.slice(),
+      badges: new Map<string, number>(this.badgeState),
+      exportedAt: Date.now()
+    };
+  }
+
+  /** 把一份数据整体落在本机：设备、回收站、勋章一起写，再整屏刷新 */
+  private applySnapshot(s: Snapshot): void {
+    this.deviceList = s.devices;
+    // 同一台设备不能既在册又在回收站，否则在回收站点一次"恢复"就多出一台重复项
+    const live: Set<string> = new Set<string>();
+    for (let i: number = 0; i < this.deviceList.length; i++) {
+      live.add(this.deviceList[i].id);
+    }
+    const recycle: TrashItem[] = [];
+    for (let i: number = 0; i < s.recycle.length; i++) {
+      if (!live.has(s.recycle[i].item.id)) {
+        recycle.push(s.recycle[i]);
+      }
+    }
+    this.trashList = recycle;
+    // 勋章只增不减：整体替换会让那次快照之后点亮的勋章凭空消失，
+    // 重新判定虽然能再点亮，达成日期却被改写成今天，原始时间就丢了。这里是并入而非覆盖。
+    s.badges.forEach((at: number, id: string) => {
+      const has: number | undefined = this.badgeState.get(id);
+      if (has === undefined || at < has) {
+        this.badgeState.set(id, at);
+      }
     });
+    DeviceStore.save(this.deviceList);
+    DeviceStore.saveTrash(this.trashList);
+    DeviceStore.saveBadges(this.badgeState);
+    this.refreshStats();
+    this.checkBadges(false);
+  }
+
+  private openDataSheet(): void {
+    this.backups = BackupStore.listBackups();
+    this.showDataSheet = true;
+  }
+
+  /** 弹系统文件选择器存成一个 .json */
+  private async exportData(): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const ok: boolean = await BackupStore.saveViaPicker(ctx, this.currentSnapshot());
+    if (ok) {
+      this.toast('已导出');
+    }
+  }
+
+  /** 弹系统文件选择器挑一个 .json 进来 */
+  private async importData(): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const snap: Snapshot | undefined = await BackupStore.pickViaPicker(ctx);
+    if (snap === undefined) {
+      return;
+    }
+    // 导入前先把当前状态强制留一份底；留底没成功就不能动本机数据
+    if (!BackupStore.forceBackup(this.currentSnapshot())) {
+      this.toast('没能写好回退快照，已取消导入');
+      return;
+    }
+    const before: number = this.deviceList.length;
+    this.applySnapshot(BackupStore.merge(this.currentSnapshot(), snap));
+    this.showDataSheet = false;
+    // 报"新增了几台"，而不是合并后的总台数——后者会让人以为文件里的设备全都进来了
+    const added: number = this.deviceList.length - before;
+    this.toast(added > 0 ? ('导入完成，新增 ' + added + ' 台设备') : '没有新设备需要并入');
+  }
+
+  /** 回滚到某一槽位的自动备份 */
+  private restoreBackup(slot: number): void {
+    const snap: Snapshot | undefined = BackupStore.readBackup(slot);
+    if (snap === undefined) {
+      this.toast('这份备份读不出来');
+      return;
+    }
+    if (!BackupStore.forceBackup(this.currentSnapshot())) {
+      this.toast('没能写好回退快照，已取消恢复');
+      return;
+    }
+    this.applySnapshot(snap);
+    this.showDataSheet = false;
+    this.toast('已恢复到这个时间点');
+  }
+
+  private toast(msg: string): void {
+    try {
+      promptAction.showToast({ message: msg, duration: 2000 });
+    } catch (e) {
+      // 提示失败不该影响数据本身
+    }
   }
 
   /* ------------------------------ 界面 ------------------------------ */
@@ -903,6 +1260,28 @@ struct Index {
                   this.toggleTheme();
                 })
 
+                Stack() {
+                  Text('⋯')
+                    .fontSize(20)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor(this.theme.text2)
+                }
+                .width(38)
+                .height(38)
+                .borderRadius(19)
+                .backgroundColor(this.theme.card)
+                .shadow({ radius: 8, color: this.theme.dark ? '#40000000' : '#10000000', offsetX: 0, offsetY: 2 })
+                .margin({ left: 10 })
+                .focusable(false)
+                .scale({ x: this.sc('more'), y: this.sc('more') })
+                .animation({ duration: 140, curve: Curve.EaseOut })
+                .onTouch((e: TouchEvent) => {
+                  this.onPress(e, 'more');
+                })
+                .onClick(() => {
+                  this.openDataSheet();
+                })
+
                 Button('＋ 记一笔')
                   .fontSize(14)
                   .fontColor(Color.White)
@@ -934,6 +1313,11 @@ struct Index {
                 avg: this.statAvg,
                 bestName: this.statBestName,
                 bestAvg: this.statBestAvg,
+                badgeCount: this.badgeState.size,
+                badgeTotal: Badges.ALL.length,
+                onOpenBadges: () => {
+                  this.showBadges = true;
+                },
                 theme: this.theme
               })
 
@@ -1597,9 +1981,7 @@ struct Index {
             .layoutWeight(1)
             .focusable(false)
             .onClick(() => {
-              animateTo({ duration: 180, curve: Curve.EaseIn }, () => {
-                this.pendingDeleteId = '';
-              });
+              this.closeDeleteConfirm();
             })
 
           Column() {
@@ -1628,9 +2010,7 @@ struct Index {
                   this.onPress(e, 'delCancel');
                 })
                 .onClick(() => {
-                  animateTo({ duration: 180, curve: Curve.EaseIn }, () => {
-                    this.pendingDeleteId = '';
-                  });
+                  this.closeDeleteConfirm();
                 })
               Button('删除')
                 .fontSize(15)
@@ -1664,9 +2044,7 @@ struct Index {
             .layoutWeight(1)
             .focusable(false)
             .onClick(() => {
-              animateTo({ duration: 180, curve: Curve.EaseIn }, () => {
-                this.pendingDeleteId = '';
-              });
+              this.closeDeleteConfirm();
             })
         }
         .width('100%')
@@ -1682,7 +2060,10 @@ struct Index {
             DeviceStore.saveAgreed(true);
             this.showPrivacy = false;
             this.deviceList = DeviceStore.load();
+            this.trashList = DeviceStore.loadTrash(BackupStore.KEEP_DAYS);
+            this.badgeState = DeviceStore.loadBadges();
             this.refreshStats();
+            this.checkBadges(false);
           },
           onExit: () => {
             try {
@@ -1691,6 +2072,97 @@ struct Index {
             } catch (e) {
               // 结束不掉就留在确认页，不做别的处理
             }
+          }
+        })
+      }
+
+      /* ============ 数据与备份 ============ */
+      if (this.showDataSheet) {
+        DataSheet({
+          theme: this.theme,
+          deviceCount: this.deviceList.length,
+          recycleCount: this.trashList.length,
+          badgeCount: this.badgeUnlockedCount(),
+          badgeTotal: Badges.ALL.length,
+          backups: this.backups,
+          onExport: () => {
+            this.exportData();
+          },
+          onImport: () => {
+            this.importData();
+          },
+          onRestoreBackup: (slot: number) => {
+            this.restoreBackup(slot);
+          },
+          onOpenTrash: () => {
+            this.showDataSheet = false;
+            this.showTrash = true;
+          },
+          onOpenBadges: () => {
+            this.showDataSheet = false;
+            this.showBadges = true;
+          },
+          onClose: () => {
+            this.showDataSheet = false;
+          }
+        })
+      }
+
+      /* ============ 回收站 ============ */
+      if (this.showTrash) {
+        TrashSheet({
+          theme: this.theme,
+          items: this.trashList,
+          keepDays: BackupStore.KEEP_DAYS,
+          onRestore: (id: string) => {
+            this.restoreFromTrash(id);
+          },
+          onDeleteForever: (id: string) => {
+            this.deleteForever(id);
+          },
+          onClear: () => {
+            this.clearTrash();
+          },
+          onClose: () => {
+            this.showTrash = false;
+          }
+        })
+      }
+
+      /* ============ 勋章墙 ============ */
+      if (this.showBadges) {
+        BadgeWall({
+          theme: this.theme,
+          cells: this.badgeCellList,
+          onClose: () => {
+            this.showBadges = false;
+          }
+        })
+      }
+
+      /* ============ 删除后的撤销条 ============ */
+      if (this.showUndo) {
+        UndoBar({
+          theme: this.theme,
+          text: this.undoText,
+          onUndo: () => {
+            this.undoDelete();
+          },
+          onExpire: () => {
+            this.showUndo = false;
+            this.undoTrash = undefined;
+          }
+        })
+      }
+
+      /* ============ 勋章达成弹屏：压在所有层之上 ============ */
+      if (this.showCelebration) {
+        BadgeCelebration({
+          theme: this.theme,
+          items: this.celebrationItems,
+          onClose: () => {
+            this.showCelebration = false;
+            this.celebrationItems = [];
           }
         })
       }
