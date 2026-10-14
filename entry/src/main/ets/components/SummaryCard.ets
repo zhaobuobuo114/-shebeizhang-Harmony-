@@ -1,5 +1,6 @@
 import { AppTheme, LIGHT_THEME } from '../utils/Theme';
 import { Fmt } from '../utils/Format';
+import { I18n } from '../utils/I18n';
 import { Badges } from '../model/Badge';
 
 /**
@@ -9,6 +10,36 @@ import { Badges } from '../model/Badge';
  */
 @Component
 export struct SummaryCard {
+  /**
+   * 语言版本号：ArkUI 只在表达式里"读到"状态变量时才建立依赖，
+   * this.t() 自己不是状态，所以切语言不会让这行字重画。
+   * 取词一律走下面的 t() / qt()，它们读一次这个值，把依赖挂上。
+   */
+  @StorageProp('langVersion') langVersion: number = 0;
+
+  private t(key: string, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.t(key, ...args);
+  }
+
+  private qt(key: string, count: number, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.qt(key, count, ...args);
+  }
+
+  /**
+   * 金额：符号按语言取（简中/日文 ¥、繁中 NT$、英文 $），所以必须走 this.t() 拿符号，
+   * 不能直接调 Fmt.moneyLabel —— 那条路上读不到 langVersion，切完语言符号还是旧的。
+   */
+  private money(n: number): string {
+    return this.t('fmt_currency') + Fmt.money(n);
+  }
+
+  private smallMoney(n: number): string {
+    return this.t('fmt_currency') + Fmt.smallMoney(n);
+  }
+
+
   @Prop @Watch('onData') version: number = 0;
   @Prop @Watch('onData') count: number = 0;
   @Prop @Watch('onData') total: number = 0;
@@ -79,13 +110,18 @@ export struct SummaryCard {
 
       Column() {
         Row() {
-          Text('设备总投入')
+          Text(this.t('sum_total_label'))
             .fontSize(12)
             .fontColor('#D8E3FF')
+            // 定长单行：这块的高度决定了下面大数字的落点，而勋章胶囊是 y:58 绝对定位的，
+            // 标签一旦被译名撑到换行，胶囊就会压在标签第二行上。宁 ellipsis 也不换行。
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
-          Text(this.count + ' 台在册')
+          Text(this.qt('p_in_record', this.count, this.count))
             .fontSize(11)
             .fontColor('#FFFFFF')
+            .maxLines(1)
             .backgroundColor('#26FFFFFF')
             .borderRadius(10)
             .padding({ left: 9, right: 9, top: 3, bottom: 3 })
@@ -93,7 +129,7 @@ export struct SummaryCard {
         .width('100%')
         .alignItems(VerticalAlign.Center)
 
-        Text('¥' + Fmt.money(this.dTotal))
+        Text(this.money(this.dTotal))
           .fontSize(34)
           .fontWeight(FontWeight.Bold)
           .fontColor('#FFFFFF')
@@ -102,10 +138,12 @@ export struct SummaryCard {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
 
         Row() {
-          Text('日均合计')
+          Text(this.t('sum_avg_label'))
             .fontSize(12)
             .fontColor('#D8E3FF')
-          Text('¥' + Fmt.smallMoney(this.dAvg))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(this.smallMoney(this.dAvg))
             .fontSize(16)
             .fontWeight(FontWeight.Bold)
             .fontColor('#FFD9C0')
@@ -117,9 +155,10 @@ export struct SummaryCard {
 
         if (this.bestName.length > 0) {
           Row() {
-            Text('最划算')
+            Text(this.t('sum_best_label'))
               .fontSize(11)
               .fontColor('#FFFFFF')
+              .maxLines(1)
               .backgroundColor('#26FFFFFF')
               .borderRadius(8)
               .padding({ left: 7, right: 7, top: 2, bottom: 2 })
@@ -131,9 +170,10 @@ export struct SummaryCard {
               .textOverflow({ overflow: TextOverflow.Ellipsis })
               .layoutWeight(1)
               .margin({ left: 8 })
-            Text('日均 ¥' + Fmt.smallMoney(this.bestAvg))
+            Text(this.t('sum_avg_prefix', this.smallMoney(this.bestAvg)))
               .fontSize(12)
               .fontColor('#FFD9C0')
+              .maxLines(1)
           }
           .width('100%')
           .alignItems(VerticalAlign.Center)
@@ -151,9 +191,10 @@ export struct SummaryCard {
           Image(Badges.MEDAL)
             .width(16)
             .height(16)
-          Text(this.badgeCount + ' / ' + this.badgeTotal)
+          Text(this.t('sum_badge_progress', this.badgeCount, this.badgeTotal))
             .fontSize(11)
             .fontColor('#FFFFFF')
+            .maxLines(1)
             .margin({ left: 5 })
           Text('›')
             .fontSize(13)

@@ -1,6 +1,7 @@
 import { ChartData, PieSlice } from '../model/ChartData';
 import { AppTheme, LIGHT_THEME } from '../utils/Theme';
 import { Fmt } from '../utils/Format';
+import { I18n } from '../utils/I18n';
 
 interface LegendRow {
   name: string;
@@ -16,6 +17,24 @@ interface LegendRow {
  */
 @Component
 export struct ChartCard {
+  /**
+   * 语言版本号：ArkUI 只在表达式里"读到"状态变量时才建立依赖，
+   * this.t() 自己不是状态，所以切语言不会让这行字重画。
+   * 取词一律走下面的 t() / qt()，它们读一次这个值，把依赖挂上。
+   */
+  @StorageProp('langVersion') @Watch('onLang') langVersion: number = 0;
+
+  private t(key: string, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.t(key, ...args);
+  }
+
+  private qt(key: string, count: number, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.qt(key, count, ...args);
+  }
+
+
   @Prop @Watch('refresh') dataAmount: string = '[]';
   @Prop @Watch('refresh') dataCount: string = '[]';
   @Prop @Watch('onTheme') theme: AppTheme = LIGHT_THEME;
@@ -69,6 +88,22 @@ export struct ChartCard {
     this.draw();
   }
 
+  /**
+   * 语言切换：圆心的三处文案与图例都是 draw()/buildRows() 现取的，不重绘就留着旧语言。
+   *
+   * 这里必须自己挂 @Watch：`dataAmount`/`dataCount` 那两个 @Watch('refresh') 只在
+   * JSON 字符串真的变了才触发，而**一台设备都没有**时它们恒为 '[]'、简繁之间
+   * 类型名又可能完全同名（平板/冰箱/其他三项繁简同字），两种情况都不会触发 refresh，
+   * 于是切完语言圆心还写着「总投入」。
+   *
+   * 不复用 refresh()：那会 start() 重播 820ms 展开动画，而安卓侧切语言是
+   * `updateChart(animate=false, force=true)`——只重画、不重播。
+   */
+  private onLang(): void {
+    this.rows = this.buildRows();
+    this.draw();
+  }
+
   private setMode(m: string): void {
     if (this.mode === m) {
       return;
@@ -97,18 +132,26 @@ export struct ChartCard {
 
   /* --------------------------- 绘制 --------------------------- */
 
+  /**
+   * 圆心的三处文案都在每次 draw 里现取，不留模块级常量：
+   * 画布是命令式绘制的，缓存下来的字符串不会跟着语言变。
+   */
   private centerMain(): string {
     const total: number = this.totalValue();
     const shown: number = total * this.progress;
     if (this.mode === 'amount') {
       // 单位跟最终值保持一致，动画过程里才不会在「99,999」和「10.0万」之间跳一下
-      return '¥' + Fmt.moneyCompactAs(shown, total);
+      return I18n.currency() + Fmt.moneyCompactAs(shown, total);
     }
     return Math.round(shown).toString();
   }
 
   private centerSub(): string {
-    return this.mode === 'amount' ? '总投入' : '台设备';
+    if (this.mode === 'amount') {
+      return this.t('chart_center_amount');
+    }
+    // 圆心下方那个词要跟着台数走单复数：英文一台是 "1 device"，两台才是 "2 devices"
+    return this.qt('p_center_count', Math.round(this.totalValue()));
   }
 
   /**
@@ -119,7 +162,7 @@ export struct ChartCard {
   private centerSettled(): string {
     const total: number = this.totalValue();
     if (this.mode === 'amount') {
-      return '¥' + Fmt.moneyCompact(total);
+      return I18n.currency() + Fmt.moneyCompact(total);
     }
     return Math.round(total).toString();
   }
@@ -156,6 +199,98 @@ export struct ChartCard {
     }
   }
 
+  /**
+   * 一个色值往白（delta>0）或往黑（delta<0）挪 delta 的比例。
+   * 渐变两档由它从扇区自己的主题色派生，而不是另配一套色板：
+   * 41 种设备类型每种只有一个色，深色模式下另配色板会亮成一片不像同个 app。
+   */
+  private shade(hex: string, delta: number): string {
+    let h: string = hex;
+    if (h.startsWith('#')) {
+      h = h.substring(1);
+    }
+    if (h.length === 3) {
+      h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    }
+    if (h.length < 6) {
+      return hex;
+    }
+    const to: number = delta > 0 ? 255 : 0;
+    const k: number = Math.abs(delta);
+    const out: string[] = [];
+    for (let i: number = 0; i < 3; i++) {
+      const raw: number = parseInt(h.substring(i * 2, i * 2 + 2), 16);
+      const v: number = isNaN(raw) ? 0 : raw;
+      let mixed: number = Math.round(v + (to - v) * k);
+      if (mixed < 0) {
+        mixed = 0;
+      }
+      if (mixed > 255) {
+        mixed = 255;
+      }
+      const s: string = mixed.toString(16);
+      out.push(s.length < 2 ? '0' + s : s);
+    }
+    return '#' + out[0] + out[1] + out[2];
+  }
+
+  /**
+   * 圆角扇环：外弧 → 右下圆角 → 侧边 → 内下圆角 → 内弧 → 左下圆角 → 侧边 → 左上圆角。
+   *
+   * 圆角半径被三件事卡着：环宽的一半、这一片在内圈上的弧长的一半、在外圈上的弧长的一半。
+   * 占比千分之几的窄片会被后两项压到 0，这时**退回直角**——
+   * 宁可那一片是个小楔子，也不能让两个圆角互相穿过、把扇面扭成蝴蝶结。
+   */
+  private slicePath(ctx: CanvasRenderingContext2D, cx: number, cy: number, rIn: number,
+    rOut: number, a0: number, a1: number, cr: number): void {
+    const w: number = rOut - rIn;
+    const span: number = a1 - a0;
+    let r: number = cr;
+    if (r > w / 2) {
+      r = w / 2;
+    }
+    if (r > span * rIn / 2) {
+      r = span * rIn / 2;
+    }
+    if (r > span * rOut / 2) {
+      r = span * rOut / 2;
+    }
+    if (r < 0.6) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, rOut, a0, a1, false);
+      ctx.arc(cx, cy, rIn, a1, a0, true);
+      ctx.closePath();
+      return;
+    }
+    const aoOut: number = r / rOut;
+    const aoIn: number = r / rIn;
+    ctx.beginPath();
+    ctx.moveTo(cx + rOut * Math.cos(a0 + aoOut), cy + rOut * Math.sin(a0 + aoOut));
+    ctx.arc(cx, cy, rOut, a0 + aoOut, a1 - aoOut, false);
+    // 弧走到头，用"尖角当控制点"的二次曲线拐进侧边；侧边是径向直线
+    ctx.quadraticCurveTo(cx + rOut * Math.cos(a1), cy + rOut * Math.sin(a1),
+      cx + (rOut - r) * Math.cos(a1), cy + (rOut - r) * Math.sin(a1));
+    ctx.lineTo(cx + (rIn + r) * Math.cos(a1), cy + (rIn + r) * Math.sin(a1));
+    ctx.quadraticCurveTo(cx + rIn * Math.cos(a1), cy + rIn * Math.sin(a1),
+      cx + rIn * Math.cos(a1 - aoIn), cy + rIn * Math.sin(a1 - aoIn));
+    ctx.arc(cx, cy, rIn, a1 - aoIn, a0 + aoIn, true);
+    ctx.quadraticCurveTo(cx + rIn * Math.cos(a0), cy + rIn * Math.sin(a0),
+      cx + (rIn + r) * Math.cos(a0), cy + (rIn + r) * Math.sin(a0));
+    ctx.lineTo(cx + (rOut - r) * Math.cos(a0), cy + (rOut - r) * Math.sin(a0));
+    ctx.quadraticCurveTo(cx + rOut * Math.cos(a0), cy + rOut * Math.sin(a0),
+      cx + rOut * Math.cos(a0 + aoOut), cy + rOut * Math.sin(a0 + aoOut));
+    ctx.closePath();
+  }
+
+  /** 整圈扇环路径（投影与轨道用）：不切缝、不圆角；dy 是整体下移的像素数 */
+  private ringPath(ctx: CanvasRenderingContext2D, cx: number, cy: number, rIn: number,
+    rOut: number, dy: number): void {
+    ctx.beginPath();
+    ctx.arc(cx, cy + dy, rOut, 0, Math.PI * 2, false);
+    ctx.arc(cx, cy + dy, rIn, Math.PI * 2, 0, true);
+    ctx.closePath();
+  }
+
   private drawInner(): void {
     const th: AppTheme = this.theme;
     const ctx: CanvasRenderingContext2D = this.ctx;
@@ -170,13 +305,18 @@ export struct ChartCard {
     const total: number = this.totalValue();
     const A0: number = -Math.PI / 2;
 
-    if (total <= 0) {
-      ctx.beginPath();
-      ctx.lineWidth = rOut - rIn;
-      ctx.strokeStyle = th.trackBg;
-      ctx.arc(cx, cy, (rOut + rIn) / 2, 0, Math.PI * 2);
-      ctx.stroke();
-    } else {
+    /* ============ 材质：先落投影与轨道，再把扇片贴上去 ============ */
+    // 投影画成"整体下移 2vp 的一份低透明度环形"，不用 shadowBlur：
+    // 安卓那边硬件加速画布上 setShadowLayer 对填充路径的支持要看 API 级别，
+    // 两端要长得一模一样，就只用两边行为完全一致的原语。
+    ctx.fillStyle = th.dark ? 'rgba(0,0,0,0.34)' : 'rgba(0,0,0,0.10)';
+    this.ringPath(ctx, cx, cy, rIn, rOut, 2);
+    ctx.fill();
+    ctx.fillStyle = th.trackBg;
+    this.ringPath(ctx, cx, cy, rIn, rOut, 0);
+    ctx.fill();
+
+    if (total > 0) {
       const end: number = A0 + Math.PI * 2 * this.progress;
       // 相邻两段之间留 3vp 的缝。早先这里是给每段描一圈 3px 的卡片色边框，
       // 但 stroke 是以路径为中心向两侧各铺一半的，会把两边的扇面各吃掉一点，
@@ -198,19 +338,33 @@ export struct ChartCard {
         }
         // 整段都已显示时才让出缝隙，否则动画推进中的那一段会一跳一跳地变窄
         const whole: boolean = raw1 >= s1 - 0.0001;
-        const b1: number = whole ? s1 - gap : raw1;
+        // 让缝之后可能比起点还窄：原先直接 continue，于是占比不到 ~0.5% 的类型在图上
+        // 一个像素都没有，而图例里照样列着它、还标着 1%（百分比是最大余数法保底的）。
+        // 安卓端有 1.2° 的 minSweep 保底，这里同值同法：至少画出 1.2°，
+        // 但用 Math.min(raw1, …) 封在这一片自身的角度内，不会压到下一片。
+        const minSweep: number = 1.2 * Math.PI / 180;
+        const b1: number = whole ? Math.min(raw1, Math.max(s1 - gap, b0 + minSweep)) : raw1;
         if (b1 - b0 <= 0.0001) {
           continue;
         }
-        // 扇环：外弧 -> 内弧反向 -> 闭合
-        ctx.beginPath();
-        ctx.arc(cx, cy, rOut, b0, b1, false);
-        ctx.arc(cx, cy, rIn, b1, b0, true);
-        ctx.closePath();
-        ctx.fillStyle = this.slices[i].c;
+        // 扇环：圆角四角 + 内外两条弧，窄片自动退回直角（见 slicePath）；
+        // 填充用从内圈到外圈的径向渐变，内暗外亮，41 种颜色各自派生、不另配色板
+        const base: string = this.slices[i].c;
+        const grad: CanvasGradient = ctx.createRadialGradient(cx, cy, rIn, cx, cy, rOut);
+        grad.addColorStop(0, this.shade(base, -0.10));
+        grad.addColorStop(1, this.shade(base, 0.16));
+        this.slicePath(ctx, cx, cy, rIn, rOut, b0, b1, 4);
+        ctx.fillStyle = grad;
         ctx.fill();
       }
     }
+
+    /* ============ 内圈高光：1.2vp 的一圈浅色描边，把"洞口"边缘立起来 ============ */
+    ctx.beginPath();
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = th.dark ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.05)';
+    ctx.arc(cx, cy, rIn - 1.4, 0, Math.PI * 2, false);
+    ctx.stroke();
 
     // 圆心文字：可用宽度取"文字所在高度处的内圆弦长"，
     // 而不是直接用内圆直径——上下两行是错开画的，弦长才是真实可用宽度。
@@ -304,7 +458,9 @@ export struct ChartCard {
     const rows: LegendRow[] = [];
     for (let i: number = 0; i < this.slices.length; i++) {
       const v: number = this.slices[i].v;
-      const value: string = this.mode === 'amount' ? ('¥' + Fmt.money(v)) : (v.toFixed(0) + ' 台');
+      const value: string = this.mode === 'amount'
+        ? (I18n.currency() + Fmt.money(v))
+        : this.qt('p_sticky_count', v, v.toFixed(0));
       rows.push({
         name: this.slices[i].n,
         value: value,
@@ -318,54 +474,37 @@ export struct ChartCard {
 
   /* --------------------------- 界面 --------------------------- */
 
+  /**
+   * 表头拆成两行。
+   *
+   * 原来一行里塞了标题、副标题、两个模式胶囊和收起按钮：中文刚好放得下，
+   * 但英文量出来 "Where it went" + "By device type" + "By amount" + "By count" + "Collapse"
+   * 约 393vp、日语约 332vp，而卡片正文只有 296vp 宽（360vp 屏减去页面与卡片内边距），
+   * 光靠副标题收缩根本填不平——最右边的胶囊会被直接切掉。
+   * 现在第一行只剩 标题 + 副标题（弹性、省略号）+ 收起，四种语言都放得下；
+   * 两个模式胶囊单独一行右对齐，点击区域也更大。
+   */
   build() {
     Column() {
       Row() {
-        Text('支出构成')
+        Text(this.t('chart_title'))
           .fontSize(15)
           .fontWeight(FontWeight.Bold)
           .fontColor(this.theme.text)
-        Text('按设备类型')
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(this.t('chart_sub'))
           .fontSize(11)
           .fontColor(this.theme.sub)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .margin({ left: 8 })
+          // 本行唯一的弹性元素：标题与"收起"都定长，挤不动的一律省略号
           .layoutWeight(1)
-
-        Text('按金额')
-          .fontSize(11)
-          .fontColor(this.mode === 'amount' ? this.theme.onPrimary : this.theme.chipText)
-          .backgroundColor(this.mode === 'amount' ? this.theme.primary : this.theme.chipBg)
-          .borderRadius(11)
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          // 关闭系统焦点框，改用自定义按压缩放
-          .focusable(false)
-          .scale({ x: this.sc('amount'), y: this.sc('amount') })
-          .animation({ duration: 140, curve: Curve.EaseOut })
-          .onTouch((e: TouchEvent) => {
-            this.onPress(e, 'amount');
-          })
-          .onClick(() => {
-            this.setMode('amount');
-          })
-        Text('按台数')
-          .fontSize(11)
-          .fontColor(this.mode === 'count' ? this.theme.onPrimary : this.theme.chipText)
-          .backgroundColor(this.mode === 'count' ? this.theme.primary : this.theme.chipBg)
-          .borderRadius(11)
-          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-          .margin({ left: 6 })
-          .focusable(false)
-          .scale({ x: this.sc('count'), y: this.sc('count') })
-          .animation({ duration: 140, curve: Curve.EaseOut })
-          .onTouch((e: TouchEvent) => {
-            this.onPress(e, 'count');
-          })
-          .onClick(() => {
-            this.setMode('count');
-          })
-        Text(this.open ? '收起' : '展开')
+        Text(this.open ? this.t('chart_collapse') : this.t('chart_expand'))
           .fontSize(11)
           .fontColor(this.theme.sub)
+          .maxLines(1)
           .margin({ left: 10 })
           .focusable(false)
           .scale({ x: this.sc('toggle'), y: this.sc('toggle') })
@@ -382,6 +521,46 @@ export struct ChartCard {
       .width('100%')
       .alignItems(VerticalAlign.Center)
 
+      Row() {
+        Text(this.t('chart_by_amount'))
+          .fontSize(11)
+          .fontColor(this.mode === 'amount' ? this.theme.onPrimary : this.theme.chipText)
+          .backgroundColor(this.mode === 'amount' ? this.theme.primary : this.theme.chipBg)
+          .borderRadius(11)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .maxLines(1)
+          // 关闭系统焦点框，改用自定义按压缩放
+          .focusable(false)
+          .scale({ x: this.sc('amount'), y: this.sc('amount') })
+          .animation({ duration: 140, curve: Curve.EaseOut })
+          .onTouch((e: TouchEvent) => {
+            this.onPress(e, 'amount');
+          })
+          .onClick(() => {
+            this.setMode('amount');
+          })
+        Text(this.t('chart_by_count'))
+          .fontSize(11)
+          .fontColor(this.mode === 'count' ? this.theme.onPrimary : this.theme.chipText)
+          .backgroundColor(this.mode === 'count' ? this.theme.primary : this.theme.chipBg)
+          .borderRadius(11)
+          .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+          .maxLines(1)
+          .margin({ left: 6 })
+          .focusable(false)
+          .scale({ x: this.sc('count'), y: this.sc('count') })
+          .animation({ duration: 140, curve: Curve.EaseOut })
+          .onTouch((e: TouchEvent) => {
+            this.onPress(e, 'count');
+          })
+          .onClick(() => {
+            this.setMode('count');
+          })
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.End)
+      .margin({ top: 8 })
+
       if (this.open) {
         Row() {
           Canvas(this.ctx)
@@ -394,7 +573,7 @@ export struct ChartCard {
 
           Column() {
             if (this.rows.length === 0) {
-              Text('还没有数据')
+              Text(this.t('chart_empty_legend'))
                 .fontSize(12)
                 .fontColor(this.theme.sub)
             } else {
@@ -425,7 +604,7 @@ export struct ChartCard {
                 .width('100%')
                 .height(22)
                 .alignItems(VerticalAlign.Center)
-              }, (row: LegendRow) => row.key)
+              }, (row: LegendRow) => this.langVersion + '|' + row.key)
             }
           }
           .layoutWeight(1)

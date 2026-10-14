@@ -1,6 +1,25 @@
-/** 日期工具：统一按本地时区、按"自然日"计算，避免时区和时分秒带来的误差 */
+import { I18n, Lang } from './I18n';
+
+/** 日期工具：统一按本地时区、按"自然日"计算，避免时区和时分秒带来的误差。
+ *
+ * 关于本地化的分工：`format/parse/sanitize/daysSince/today/pad/epochDay`
+ * 与 yyyy-MM-dd 这套**存储格式**一律与语言无关——它是数据格式，也是和安卓版
+ * 导出文件之间的跨端契约，任何时候都不能因为界面语言而改变。
+ * 只有 displayDate / formatStamp / formatClock / humanDays 这四个"给人看"的方法
+ * 才按当前语言取写法。
+ */
 export class DateUtil {
   private static readonly DAY_MS: number = 24 * 60 * 60 * 1000;
+
+  /**
+   * 英文月份缩写。刻意写死在这里而不用 Intl：
+   * Intl 读的是**系统** locale，而本应用的语言是应用内偏好（可以跟系统不一致），
+   * 用 Intl 会出现"界面是英文、日期却是系统语言"的错配。
+   */
+  private static readonly MONTHS_EN: string[] = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
 
   /** 数字补零 */
   static pad(n: number): string {
@@ -71,38 +90,88 @@ export class DateUtil {
     return DateUtil.today();
   }
 
-  /** 时间戳 -> yyyy.MM.dd（勋章获得日期用） */
+  /**
+   * 存储串 yyyy-MM-dd -> 界面上的日期。
+   * 简中/繁中/日语原样返回 ISO（这三种语言里它就是最自然的写法，
+   * 而且和存储格式一致、不引入任何歧义）；英文写成 Mar 5, 2026。
+   * 读不懂的串原样返回——展示层不该猜日期，更不该顺手改成今天。
+   */
+  static displayDate(dateStr: string): string {
+    if (dateStr.length === 0 || !DateUtil.englishMonths()) {
+      return dateStr;
+    }
+    const parts: string[] = dateStr.split('-');
+    if (parts.length !== 3) {
+      return dateStr;
+    }
+    const y: number = parseInt(parts[0], 10);
+    const m: number = parseInt(parts[1], 10);
+    const d: number = parseInt(parts[2], 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d) || m < 1 || m > 12 || d < 1 || d > 31) {
+      return dateStr;
+    }
+    return DateUtil.monthEn(m) + ' ' + d + ', ' + y;
+  }
+
+  /** 时间戳 -> 勋章获得日期（简中/繁中/日语 2026.03.05；英文 Mar 5, 2026） */
   static formatStamp(at: number): string {
     if (at <= 0) {
       return '';
     }
     const d: Date = new Date(at);
+    if (DateUtil.englishMonths()) {
+      return DateUtil.monthEn(d.getMonth() + 1) + ' ' + d.getDate() + ', ' + d.getFullYear();
+    }
     return d.getFullYear() + '.' + DateUtil.pad(d.getMonth() + 1) + '.' + DateUtil.pad(d.getDate());
   }
 
-  /** 时间戳 -> 便于排序与比对的时间串，如 10-09 14:30（备份列表用） */
+  /** 时间戳 -> 便于排序与比对的时间串，如 10-09 14:30 / Oct 9, 14:30（备份列表用） */
   static formatClock(at: number): string {
     if (at <= 0) {
       return '--';
     }
     const d: Date = new Date(at);
     const now: Date = new Date();
-    const dayPart: string = d.getFullYear() === now.getFullYear()
+    const sameYear: boolean = d.getFullYear() === now.getFullYear();
+    const clock: string = DateUtil.pad(d.getHours()) + ':' + DateUtil.pad(d.getMinutes());
+    if (DateUtil.englishMonths()) {
+      // 英文同年就省掉年份，与原本"只写 MM-dd"的思路一致；跨年才补上
+      const mon: string = DateUtil.monthEn(d.getMonth() + 1) + ' ' + d.getDate();
+      const dayPart: string = sameYear ? mon : mon + ', ' + d.getFullYear();
+      return dayPart + ', ' + clock;
+    }
+    const dayPart: string = sameYear
       ? DateUtil.pad(d.getMonth() + 1) + '-' + DateUtil.pad(d.getDate())
       : d.getFullYear() + '-' + DateUtil.pad(d.getMonth() + 1) + '-' + DateUtil.pad(d.getDate());
-    return dayPart + ' ' + DateUtil.pad(d.getHours()) + ':' + DateUtil.pad(d.getMinutes());
+    return dayPart + ' ' + clock;
   }
 
-  /** 把天数说成人话：如 3 年 2 个月 */
+  /** 把天数说成人话：如 3 年 2 个月 / 3 yr 2 mo（量词与单复数都在 p_* 里） */
   static humanDays(days: number): string {
     if (days < 30) {
-      return days + ' 天';
+      return I18n.qt('p_days', days, days);
     }
+    const months: number = Math.floor(days / 30);
     if (days < 365) {
-      return Math.floor(days / 30) + ' 个月';
+      return I18n.qt('p_months', months, months);
     }
     const years: number = Math.floor(days / 365);
     const restMonths: number = Math.floor((days - years * 365) / 30);
-    return restMonths > 0 ? years + ' 年 ' + restMonths + ' 个月' : years + ' 年';
+    return restMonths > 0
+      ? I18n.qt('p_years_months', years, years, restMonths)
+      : I18n.qt('p_years', years, years);
+  }
+
+  /** 界面当前是否用英文月名写法（只有 en；其余三种语言都是数字日期） */
+  private static englishMonths(): boolean {
+    return I18n.current() === Lang.EN;
+  }
+
+  /** 1~12 月 -> 英文缩写；越界退化成数字补零，取值前先挡住脏数据 */
+  private static monthEn(month: number): string {
+    if (month < 1 || month > 12) {
+      return DateUtil.pad(month);
+    }
+    return DateUtil.MONTHS_EN[month - 1];
   }
 }

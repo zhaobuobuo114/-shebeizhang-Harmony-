@@ -30,6 +30,30 @@ export interface RawDevice {
 
 /** 与设备相关的计算逻辑 */
 export class DeviceCalc {
+  /**
+   * 合理价格上限（元），与安卓 `DeviceCalc.MAX_PRICE` 同值。
+   * 超过它只可能来自被改坏的文件，钳成 0 而不是整条丢掉。
+   */
+  static readonly MAX_PRICE: number = 1e12;
+
+  /** 补 id 用的进程内递增序号，见 fallbackId */
+  private static fallbackSeq: number = 0;
+
+  /**
+   * 缺 id 时补一个：时间戳 + 递增序号 + 24 位随机。与安卓 `DeviceCalc.fallbackId` 同规则。
+   *
+   * 原先只靠 `Math.random() * 10000`：一批**同时缺 id 又缺 createdAt** 的记录
+   * （手工编辑过的导出文件就会出现，此时全是 `d0<随机>`）里，100 条至少撞一次的概率约 39%。
+   * 撞了之后 findById / findTrashIndex 只命中第一条，编辑删除收藏都会改错对象，
+   * BackupStore.merge 还会把第二条静默吃掉。序号保证同批内绝不重复，随机数防跨会话同 id。
+   */
+  static fallbackId(createdAt: number): string {
+    DeviceCalc.fallbackSeq = DeviceCalc.fallbackSeq + 1;
+    const seq: string = DeviceCalc.fallbackSeq.toString(36);
+    const rnd: string = Math.floor(Math.random() * 0x1000000).toString(36);
+    return 'd' + createdAt + '-' + seq + '-' + rnd;
+  }
+
   /** 已使用天数：含购买当天，至少 1 天 */
   static daysUsed(item: DeviceItem): number {
     return DateUtil.daysSince(item.buyDate) + 1;
@@ -76,14 +100,16 @@ export class DeviceCalc {
     const rawDate: string = typeof raw.buyDate === 'string' ? raw.buyDate : '';
 
     const priceNum: number = typeof raw.price === 'number' ? raw.price : Number(raw.price);
-    // 录入面板本来就禁止 0 与负数，负价只可能来自被改坏的文件；钳成 0 免得把扇形图算出负百分比
-    const price: number = isFinite(priceNum) && priceNum > 0 ? priceNum : 0;
+    // 录入面板本来就禁止 0 与负数，负价只可能来自被改坏的文件；钳成 0 免得把扇形图算出负百分比。
+    // 上界同理：1e300 不会崩，但 money() 会为它排出四百多个字符，把卡片和扇形图撑出屏幕。
+    const price: number = isFinite(priceNum) && priceNum > 0 && priceNum <= DeviceCalc.MAX_PRICE
+      ? priceNum : 0;
 
     const createdNum: number = typeof raw.createdAt === 'number' ? raw.createdAt : Number(raw.createdAt);
     const created: number = isFinite(createdNum) && createdNum > 0 ? Math.trunc(createdNum) : 0;
 
     const item: DeviceItem = {
-      id: rawId.length > 0 ? rawId : ('d' + created + Math.floor(Math.random() * 10000)),
+      id: rawId.length > 0 ? rawId : DeviceCalc.fallbackId(created),
       name: name,
       price: price,
       buyDate: DateUtil.sanitize(rawDate),

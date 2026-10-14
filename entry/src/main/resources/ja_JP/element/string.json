@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "デバイス台帳モジュール"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "デバイス台帳"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "デバイス台帳"
+    }
+  ]
+}

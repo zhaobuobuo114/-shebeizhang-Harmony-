@@ -517,9 +517,18 @@ export class BackupStore {
     }
   }
 
+  /**
+   * 文件的最后修改时间，**毫秒**。
+   *
+   * `@ohos.file.fs` 的 `Stat.mtime` 官方说明是 "the number of **seconds** elapsed since
+   * 00:00:00 on January 1, 1970"（要纳秒另有 `mtimeNs`），而调用方
+   * （`DateUtil.formatClock` → `new Date(at)`）按毫秒解释。原先直接返回秒值，
+   * 只要某个槽位的快照解析失败走到这条回退路径，面板上就会显示一个 1970 年的时间，
+   * 还会被时间排序甩到列表末尾。安卓端用的是 `File.lastModified()`，本来就是毫秒。
+   */
   private static lastModified(path: string): number {
     try {
-      return fs.statSync(path).mtime;
+      return fs.statSync(path).mtime * 1000;
     } catch (e) {
       return 0;
     }

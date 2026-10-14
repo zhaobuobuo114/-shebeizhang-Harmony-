@@ -1,5 +1,6 @@
 import { DeviceItem } from './DeviceItem';
 import { findKind } from './DeviceKind';
+import { I18n } from '../utils/I18n';
 
 /** 扇形图的一段 */
 export interface PieSlice {
@@ -40,7 +41,7 @@ export class ChartData {
     const out: PieSlice[] = [];
     for (let i: number = 0; i < keys.length; i++) {
       const kd = findKind(keys[i]);
-      out.push({ n: kd.label, v: vals[i], c: kd.color });
+      out.push({ n: I18n.t(kd.labelKey), v: vals[i], c: kd.color });
     }
     out.sort((a: PieSlice, b: PieSlice): number => b.v - a.v);
 
@@ -50,7 +51,7 @@ export class ChartData {
         rest += out[i].v;
       }
       out.splice(MAX_SLICE - 1, out.length - MAX_SLICE + 1);
-      out.push({ n: '其他', v: rest, c: '#9CA3AF' });
+      out.push({ n: I18n.t('kind_other'), v: rest, c: '#9CA3AF' });
     }
     return out;
   }

@@ -1,12 +1,12 @@
 import { DeviceCalc, DeviceItem } from '../model/DeviceItem';
-import { DEVICE_KINDS, kindIcon, kindLabel } from '../model/DeviceKind';
+import { DEVICE_KINDS, kindIcon } from '../model/DeviceKind';
 import { ChartData } from '../model/ChartData';
+import { I18n } from '../utils/I18n';
 import { DeviceStore } from '../utils/DeviceStore';
 import { DateUtil } from '../utils/DateUtil';
 import { Fmt } from '../utils/Format';
 import { AppTheme, LIGHT_THEME, themeOf } from '../utils/Theme';
 import { applyColorMode } from '../utils/SystemUi';
-import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { BackupFile, BackupStore, Snapshot } from '../utils/BackupStore';
 import { BadgeDef, Badges } from '../model/Badge';
@@ -20,6 +20,14 @@ import { TrashSheet } from '../components/TrashSheet';
 import { BadgeCell, BadgeWall } from '../components/BadgeWall';
 import { BadgeCelebration, CelebrationItem } from '../components/BadgeCelebration';
 import { UndoBar } from '../components/UndoBar';
+import { common, Want } from '@kit.AbilityKit';
+
+/**
+ * 页脚那条链接指向作者的 GitHub。安卓端 `MainActivity.kt` 顶部有同一个常量，值必须一致。
+ * 放进代码而不是文案表：四门语言的 `footer_github` 都只是「我的 GitHub：{0}」这个句式，
+ * URL 是数据，不该有机会被译歪。
+ */
+const GITHUB_URL: string = 'https://github.com/zhaobuobuo114';
 
 interface SortOption {
   label: string;
@@ -52,6 +60,36 @@ interface ChipFx {
 @Entry
 @Component
 struct Index {
+  /**
+   * 语言版本号：ArkUI 只在表达式里"读到"状态变量时才建立依赖，
+   * this.t() 自己不是状态，所以切语言不会让这行字重画。
+   * 取词一律走下面的 t() / qt()，它们读一次这个值，把依赖挂上。
+   */
+  @StorageProp('langVersion') @Watch('onLangChange') langVersion: number = 0;
+
+  private t(key: string, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.t(key, ...args);
+  }
+
+  private qt(key: string, count: number, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.qt(key, count, ...args);
+  }
+
+  /**
+   * 金额：符号按语言取（简中/日文 ¥、繁中 NT$、英文 $），所以符号必须走 this.t() 现取。
+   * 直接调 Fmt.moneyLabel() 的那条路上读不到 langVersion，切完语言符号还是旧的。
+   */
+  private money(n: number): string {
+    return this.t('fmt_currency') + Fmt.money(n);
+  }
+
+  private smallMoney(n: number): string {
+    return this.t('fmt_currency') + Fmt.smallMoney(n);
+  }
+
+
   @State deviceList: DeviceItem[] = [];
   @State theme: AppTheme = LIGHT_THEME;
   @State sortType: string = 'avg';
@@ -92,6 +130,8 @@ struct Index {
 
   // 删除确认
   @State pendingDeleteId: string = '';
+  /** 「清空回收站」的二次确认：这是全应用唯一不可逆的操作 */
+  @State pendingClearTrash: boolean = false;
 
   // 回收站：删掉的设备在这里留满保留期，期间可以原样恢复
   @State trashList: TrashItem[] = [];
@@ -242,6 +282,10 @@ struct Index {
       this.closeDeleteConfirm();
       return true;
     }
+    if (this.pendingClearTrash) {
+      this.pendingClearTrash = false;
+      return true;
+    }
     if (this.showEditor) {
       this.closeEditor();
       return true;
@@ -291,6 +335,55 @@ struct Index {
     return best;
   }
 
+  /**
+   * 语言变了。
+   *
+   * 页面上直接写的文案靠 t() 里的 langVersion 依赖自动重画，但有几处是"算好存进状态"的文字快照，
+   * 不重算就会留着上一门语言：图表那两个 JSON 字符串里烘着了设备类型名，
+   * 勋章格子里烘着了勋章名与达成条件。
+   */
+  private onLangChange(): void {
+    this.refreshStats();
+    this.refreshBadgeCells();
+    // 撤销条那句是删除那一刻定型的，驻留 5 秒；这期间进面板切语言会整段留着旧语言
+    if (this.showUndo && this.undoTrash !== undefined) {
+      this.undoText = this.t('undo_deleted', this.nameOf(this.undoTrash.item));
+    }
+    // 庆祝弹屏那几页：CelebrationItem 的 name/dateText 是"算好的成品字符串"
+    // （组件接口就是 string，见 BadgeCelebration.ets 顶上那段注释），语言一变必须自己重算。
+    // 安卓端对应 BadgeCelebration.retext()。
+    if (this.showCelebration && this.celebrationItems.length > 0) {
+      const again: CelebrationItem[] = [];
+      for (let i: number = 0; i < this.celebrationItems.length; i++) {
+        const def: BadgeDef | undefined = Badges.byId(this.celebrationItems[i].id);
+        if (def === undefined) {
+          again.push(this.celebrationItems[i]);
+          continue;
+        }
+        again.push({
+          id: def.id,
+          name: Badges.nameOf(def),
+          dateText: Badges.dateText(this.badgeState.get(def.id) ?? 0),
+          icon: def.icon
+        });
+      }
+      this.celebrationItems = again;
+    }
+    // 排序胶囊的文案长短会变，而 chipGeos 里存的是按旧尺寸量出来的 x/w，
+    // 横滚时的转角与透明度会照旧几何算 → 清掉，让下一次 onAreaChange 重新量
+    this.resetChipGeos();
+    // 切完语言回到主页面：面板、回收站、勋章墙都是"打开那一刻搭好的字"，留着就是半中半英。
+    // 面板里那三处 @Builder（回收站行、勋章行、导出按钮）现在把键名传进去、在 builder 体内取词，
+    // 已经跟着 langVersion 一起刷了，不需要再靠"关掉重开"兜——何况真机实测那条路在
+    // 「跟随系统」下根本兜不住（平台不推配置回调），见 _存疑清单.md 8.3。
+    // 编辑层不关：它的文字全是 build() 里现取的 this.t()，会自己跟着换。
+    this.showDataSheet = false;
+    this.showTrash = false;
+    this.showBadges = false;
+    this.pendingClearTrash = false;
+    this.pendingDeleteId = '';
+  }
+
   /** 把汇总数据同步到状态里；数字没变就不动，避免重复播放动画 */
   private refreshStats(): void {
     // 图表数据始终重新算：只改设备类型时总金额可能不变，但构成变了
@@ -333,7 +426,12 @@ struct Index {
   }
 
   private sortedList(): DeviceItem[] {
-    let list: DeviceItem[] = this.deviceList.slice();
+    // 读一次语言版本号：ForEach 的数据表达式必须依赖 langVersion。
+    // 卡片里的类型名与日期是"按 key 现查 / 现格式化"出来的，元素自身不建语言依赖，
+    // 全靠切语言时整列表随 key 重建；而"keyGen 里读到 langVersion 算不算 ForEach 的依赖"
+    // 这条没有文档保证，所以在这里显式挂上（v 恒 >= 0，那个分支只是把读取变成使用）。
+    const v: number = this.langVersion;
+    let list: DeviceItem[] = v < 0 ? [] : this.deviceList.slice();
     // 只看收藏时先过筛，再排序
     if (this.favOnly) {
       const fav: DeviceItem[] = [];
@@ -530,25 +628,25 @@ struct Index {
     const asc: boolean = this.sortAsc;
     const opts: SortOption[] = [
       {
-        label: asc ? '日均最低' : '日均最高',
+        label: asc ? this.t('sort_avg_asc') : this.t('sort_avg_desc'),
         type: 'avg',
         selected: this.sortType === 'avg',
         key: ''
       },
       {
-        label: asc ? '价格最低' : '价格最高',
+        label: asc ? this.t('sort_price_asc') : this.t('sort_price_desc'),
         type: 'price',
         selected: this.sortType === 'price',
         key: ''
       },
       {
-        label: asc ? '最早购买' : '最近购买',
+        label: asc ? this.t('sort_date_asc') : this.t('sort_date_desc'),
         type: 'date',
         selected: this.sortType === 'date',
         key: ''
       },
       {
-        label: asc ? '用最短' : '用最久',
+        label: asc ? this.t('sort_days_asc') : this.t('sort_days_desc'),
         type: 'days',
         selected: this.sortType === 'days',
         key: ''
@@ -708,7 +806,7 @@ struct Index {
       const on: boolean = this.editKind === k;
       tiles.push({
         key: k,
-        label: DEVICE_KINDS[i].label,
+        label: this.t(DEVICE_KINDS[i].labelKey),
         selected: on,
         rowKey: k + (on ? '1' : '0')
       });
@@ -853,24 +951,26 @@ struct Index {
 
   private onSave(): void {
     const name: string = this.editName.trim();
-    const price: number = parseFloat(this.editPrice);
+    const price: number = Fmt.parsePrice(this.editPrice);
     const buyDate: string = DateUtil.format(
       this.editDate.getFullYear(), this.editDate.getMonth() + 1, this.editDate.getDate());
 
     if (name.length === 0) {
-      this.errMsg = '请填写设备名称';
+      this.errMsg = this.t('err_name');
       return;
     }
     if (this.editPrice.trim().length === 0) {
-      this.errMsg = '请填写购买价格';
+      this.errMsg = this.t('err_price_empty');
       return;
     }
-    if (!(price > 0)) {
-      this.errMsg = '请填写有效的购买价格';
+    if (!(price > 0) || price > DeviceCalc.MAX_PRICE) {
+      // 上限必须与 DeviceCalc.normalize 的钳制同一条：否则一个 13 位的价格能录进来、
+      // 当场显示正常，杀掉进程重开却被清洗规则静默归零（数据没了）
+      this.errMsg = this.t('err_price_invalid');
       return;
     }
     if (buyDate > DateUtil.today()) {
-      this.errMsg = '购买日期不能晚于今天';
+      this.errMsg = this.t('err_date_future');
       return;
     }
 
@@ -984,7 +1084,7 @@ struct Index {
     this.refreshStats();
 
     this.undoTrash = trashed;
-    this.undoText = '已删除「' + this.nameOf(target) + '」，进了回收站';
+    this.undoText = this.t('undo_deleted', this.nameOf(target));
     this.showUndo = true;
   }
 
@@ -1015,7 +1115,7 @@ struct Index {
         restOnly.splice(idx, 1);
         this.trashList = restOnly;
         DeviceStore.saveTrash(restOnly);
-        this.toast('这台设备已经在列表里了');
+        this.toast(this.t('import_duplicate'));
         return;
       }
     }
@@ -1044,6 +1144,26 @@ struct Index {
     DeviceStore.saveTrash(rest);
   }
 
+  /**
+   * 「清空回收站」先问一句再动手。
+   *
+   * 这是全应用唯一一个不可逆的操作（其余都有 30 天回收站或 5 秒撤销兜底），
+   * 而安卓端一直有这句确认（`MainActivity.askClearTrash`）。鸿蒙端原先一点就清空，
+   * `clear_trash_title` / `clear_trash_message` / `clear_trash_confirm` 三条文案
+   * 在主表里躺了很久、零引用——不是换了措辞，是整段确认缺失。
+   */
+  private askClearTrash(): void {
+    if (this.trashList.length === 0) {
+      return;
+    }
+    this.pendingClearTrash = true;
+  }
+
+  private confirmClearTrash(): void {
+    this.pendingClearTrash = false;
+    this.clearTrash();
+  }
+
   private clearTrash(): void {
     this.trashList = [];
     DeviceStore.saveTrash([]);
@@ -1059,7 +1179,7 @@ struct Index {
   }
 
   private nameOf(item: DeviceItem): string {
-    return item.name.length > 0 ? item.name : '未命名';
+    return item.name.length > 0 ? item.name : this.t('trash_unnamed');
   }
 
   /* ------------------------------ 勋章 ------------------------------ */
@@ -1079,7 +1199,7 @@ struct Index {
       for (let i: number = 0; i < fresh.length; i++) {
         items.push({
           id: fresh[i].id,
-          name: fresh[i].name,
+          name: Badges.nameOf(fresh[i]),
           dateText: Badges.dateText(this.badgeState.get(fresh[i].id) ?? 0),
           icon: fresh[i].icon
         });
@@ -1097,8 +1217,8 @@ struct Index {
       const at: number | undefined = this.badgeState.get(def.id);
       cells.push({
         id: def.id,
-        name: def.name,
-        desc: def.desc,
+        name: Badges.nameOf(def),
+        desc: Badges.descOf(def),
         icon: def.icon,
         at: at === undefined ? 0 : at
       });
@@ -1167,7 +1287,8 @@ struct Index {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     const ok: boolean = await BackupStore.saveViaPicker(ctx, this.currentSnapshot());
     if (ok) {
-      this.toast('已导出');
+      // 与安卓版同一句：报台数，不然用户不知道到底带走了多少条
+      this.toast(this.t('import_exported', this.deviceList.length));
     }
   }
 
@@ -1180,7 +1301,7 @@ struct Index {
     }
     // 导入前先把当前状态强制留一份底；留底没成功就不能动本机数据
     if (!BackupStore.forceBackup(this.currentSnapshot())) {
-      this.toast('没能写好回退快照，已取消导入');
+      this.toast(this.t('import_rollback_import'));
       return;
     }
     const before: number = this.deviceList.length;
@@ -1188,23 +1309,40 @@ struct Index {
     this.showDataSheet = false;
     // 报"新增了几台"，而不是合并后的总台数——后者会让人以为文件里的设备全都进来了
     const added: number = this.deviceList.length - before;
-    this.toast(added > 0 ? ('导入完成，新增 ' + added + ' 台设备') : '没有新设备需要并入');
+    this.toast(added > 0 ? this.t('import_done', added) : this.t('import_nothing_new'));
   }
 
   /** 回滚到某一槽位的自动备份 */
   private restoreBackup(slot: number): void {
     const snap: Snapshot | undefined = BackupStore.readBackup(slot);
     if (snap === undefined) {
-      this.toast('这份备份读不出来');
+      this.toast(this.t('import_backup_unreadable'));
       return;
     }
     if (!BackupStore.forceBackup(this.currentSnapshot())) {
-      this.toast('没能写好回退快照，已取消恢复');
+      this.toast(this.t('import_rollback_restore'));
       return;
     }
     this.applySnapshot(snap);
     this.showDataSheet = false;
-    this.toast('已恢复到这个时间点');
+    this.toast(this.t('restore_done_point'));
+  }
+
+  /**
+   * 换语言。
+   *
+   * 鸿蒙的原生资源限定目录要冷启动才生效，所以文案表是运行时从 rawfile 读进内存的，
+   * 这里只需要三步：落库 -> 重读表 -> 把 langVersion 加一。
+   * 界面上所有走 t() 的文字随之重画；几处"算好存进状态"的文字快照由 onLangChange 补算。
+   */
+  private pickLanguage(tag: string): void {
+    if (I18n.preferred() === tag) {
+      return;
+    }
+    DeviceStore.saveLanguage(tag);
+    I18n.setPreference(tag);
+    const next: number = (AppStorage.get<number>('langVersion') ?? 0) + 1;
+    AppStorage.setOrCreate('langVersion', next);
   }
 
   private toast(msg: string): void {
@@ -1212,6 +1350,27 @@ struct Index {
       promptAction.showToast({ message: msg, duration: 2000 });
     } catch (e) {
       // 提示失败不该影响数据本身
+    }
+  }
+
+  /**
+   * 用系统浏览器打开作者的 GitHub。机器上没有可打开的浏览器时静默失败——
+   * 与隐私弹窗里那两个链接同一套做法（`PrivacyDialog.openUrl`）：点不动就是点不动，
+   * 不该拿一条报错打断用户。
+   */
+  private openGitHub(): void {
+    try {
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const want: Want = {
+        action: 'ohos.want.action.viewData',
+        entities: ['entity.system.browsable'],
+        uri: GITHUB_URL
+      };
+      ctx.startAbility(want).catch(() => {
+        // 没有可用浏览器，保持原样
+      });
+    } catch (e) {
+      // 同上
     }
   }
 
@@ -1227,11 +1386,11 @@ struct Index {
               /* ============ 顶栏 ============ */
               Row() {
                 Column() {
-                  Text('设备账')
+                  Text(this.t('app_name'))
                     .fontSize(24)
                     .fontWeight(FontWeight.Bold)
                     .fontColor(this.theme.text)
-                  Text('买了多久 · 花了多少 · 每天多少钱')
+                  Text(this.t('top_slogan'))
                     .fontSize(12)
                     .fontColor(this.theme.sub)
                     .margin({ top: 3 })
@@ -1282,7 +1441,7 @@ struct Index {
                   this.openDataSheet();
                 })
 
-                Button('＋ 记一笔')
+                Button(this.t('top_add'))
                   .fontSize(14)
                   .fontColor(Color.White)
                   .backgroundColor(this.theme.primary)
@@ -1313,7 +1472,7 @@ struct Index {
                 avg: this.statAvg,
                 bestName: this.statBestName,
                 bestAvg: this.statBestAvg,
-                badgeCount: this.badgeState.size,
+                badgeCount: this.badgeUnlockedCount(),
                 badgeTotal: Badges.ALL.length,
                 onOpenBadges: () => {
                   this.showBadges = true;
@@ -1334,7 +1493,7 @@ struct Index {
                 Row() {
                   /* 「排序」两个字连同右边的上下双箭头是一整块热区：点哪儿都是切换方向 */
                   Row() {
-                    Text('排序')
+                    Text(this.t('sort_label'))
                       .fontSize(12)
                       .fontColor(this.theme.sub)
                       .margin({ right: 2 })
@@ -1387,7 +1546,7 @@ struct Index {
                   // 胶囊多了会超出一屏，这里让整行可以横向滑动，"排序"两个字固定不动
                   Scroll(this.chipScroller) {
                     Row() {
-                      Text(this.statFav > 0 ? ('★ 收藏 ' + this.statFav) : '★ 收藏')
+                      Text(this.statFav > 0 ? this.t('sort_fav_count', this.statFav) : this.t('sort_fav'))
                         .fontSize(12)
                         .fontColor(this.favOnly ? Color.White : this.theme.gold)
                         .backgroundColor(this.favOnly ? this.theme.gold : this.theme.chipBg)
@@ -1451,7 +1610,7 @@ struct Index {
                               });
                             }
                           })
-                      }, (opt: SortOption) => opt.key)
+                      }, (opt: SortOption) => this.langVersion + '|' + opt.key)
                     }
                     .alignItems(VerticalAlign.Center)
                     .onAreaChange((_o: Area, n: Area) => {
@@ -1495,20 +1654,20 @@ struct Index {
                   .objectFit(ImageFit.Contain)
                   .translate({ y: this.bob ? -8 : 0 })
                   .animation({ duration: 1500, curve: Curve.EaseInOut, iterations: -1, playMode: PlayMode.Alternate })
-                Text(this.favOnly ? '还没有收藏的设备' : '还没有设备记录')
+                Text(this.favOnly ? this.t('empty_fav_title') : this.t('empty_all_title'))
                   .fontSize(16)
                   .fontWeight(FontWeight.Medium)
                   .fontColor(this.theme.text)
                   .margin({ top: 10 })
-                Text(this.favOnly ? '点设备卡片右下角的星标，' : '记下第一台设备的购买日期和价格，')
+                Text(this.favOnly ? this.t('empty_fav_desc1') : this.t('empty_all_desc1'))
                   .fontSize(13)
                   .fontColor(this.theme.sub)
                   .margin({ top: 8 })
-                Text(this.favOnly ? '把最爱的设备收进来。' : '它会告诉你这台设备每天花了多少钱。')
+                Text(this.favOnly ? this.t('empty_fav_desc2') : this.t('empty_all_desc2'))
                   .fontSize(13)
                   .fontColor(this.theme.sub)
                   .margin({ top: 2 })
-                Button(this.favOnly ? '看全部设备' : '添加设备')
+                Button(this.favOnly ? this.t('empty_fav_action') : this.t('empty_all_action'))
                   .fontSize(15)
                   .fontColor(Color.White)
                   .backgroundColor(this.theme.primary)
@@ -1568,7 +1727,23 @@ struct Index {
               .onClick(() => {
                 this.openEditor(item);
               })
-            }, (item: DeviceItem) => DeviceCalc.key(item))
+            }, (item: DeviceItem) => this.langVersion + '|' + DeviceCalc.key(item))
+          }
+
+          /* ============ 页脚：作者的 GitHub ============ */
+          /* 整页最后一项，空列表时也在（安卓端是 NestedScrollView 里最后一个 TextView）。
+             文字走 this.t() 所以跟着语言刷；URL 是常量，不进文案表。 */
+          ListItem() {
+            Text(this.t('footer_github', GITHUB_URL))
+              .fontSize(12)
+              .fontColor(this.theme.primary)
+              .textAlign(TextAlign.Center)
+              .width('100%')
+              .padding({ top: 10, bottom: 10 })
+              .focusable(false)
+              .onClick(() => {
+                this.openGitHub();
+              })
           }
         }
         .width('100%')
@@ -1594,7 +1769,7 @@ struct Index {
       if (this.stickyOn) {
         Column() {
           Row() {
-            Text('¥' + Fmt.money(this.statTotal))
+            Text(this.money(this.statTotal))
               .fontSize(15)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.theme.text)
@@ -1603,7 +1778,7 @@ struct Index {
               .height(13)
               .backgroundColor(this.theme.line)
               .margin({ left: 11, right: 11 })
-            Text(this.statCount + ' 台')
+            Text(this.qt('p_sticky_count', this.statCount, this.statCount))
               .fontSize(12)
               .fontColor(this.theme.sub)
             Column()
@@ -1611,7 +1786,7 @@ struct Index {
               .height(13)
               .backgroundColor(this.theme.line)
               .margin({ left: 11, right: 11 })
-            Text('日均 ¥' + Fmt.smallMoney(this.statAvg))
+            Text(this.t('sticky_avg', this.smallMoney(this.statAvg)))
               .fontSize(13)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.theme.accent)
@@ -1701,12 +1876,12 @@ struct Index {
 
           Column() {
             Row() {
-              Text(this.editId.length > 0 ? '编辑设备' : '添加设备')
+              Text(this.editId.length > 0 ? this.t('editor_title_edit') : this.t('editor_title_add'))
                 .fontSize(18)
                 .fontWeight(FontWeight.Bold)
                 .fontColor(this.theme.text)
                 .layoutWeight(1)
-              Text('关闭')
+              Text(this.t('editor_close'))
                 .fontSize(14)
                 .fontColor(this.theme.sub)
                 .focusable(false)
@@ -1725,12 +1900,12 @@ struct Index {
 
             Scroll() {
               Column() {
-                Text('设备名称')
+                Text(this.t('editor_name_label'))
                   .fontSize(12)
                   .fontColor(this.theme.sub)
                   .width('100%')
                   .margin({ bottom: 6 })
-                TextInput({ placeholder: '例如：MacBook Pro 14', text: this.editName })
+                TextInput({ placeholder: this.t('editor_name_hint'), text: this.editName })
                   .fontSize(15)
                   .height(46)
                   .fontColor(this.theme.text)
@@ -1742,7 +1917,7 @@ struct Index {
                     this.editName = value;
                   })
 
-                Text('购买价格（元）')
+                Text(this.t('editor_price_label', this.t('fmt_currency')))
                   .fontSize(12)
                   .fontColor(this.theme.sub)
                   .width('100%')
@@ -1760,7 +1935,7 @@ struct Index {
                     this.editPrice = value;
                   })
 
-                Text('设备类型')
+                Text(this.t('editor_kind_label'))
                   .fontSize(12)
                   .fontColor(this.theme.sub)
                   .width('100%')
@@ -1776,9 +1951,17 @@ struct Index {
                           .objectFit(ImageFit.Contain)
                         Text(tile.label)
                           .fontSize(10)
+                          // 英文名（Smart speaker / Drawing tablet / Fitness band）一行装不下：
+                          // 与安卓 item_kind.xml 同规则 —— 两行 + 8~10fp 之间缩放 + 固定 24vp 高。
+                          // 格子总高不变（32 图标 + 2 + 24 = 58 ≤ 60），只是不再把尾巴裁掉。
+                          // （这个 SDK 的 Text 没有 adaptiveTextSize，min/maxFontSize 就是那套自动缩放）
+                          .minFontSize(8)
+                          .maxFontSize(10)
                           .fontColor(tile.selected ? this.theme.primary : this.theme.chipText)
-                          .maxLines(1)
+                          .maxLines(2)
                           .textOverflow({ overflow: TextOverflow.Ellipsis })
+                          .height(24)
+                          .textAlign(TextAlign.Center)
                           .margin({ top: 2 })
                       }
                       .width(60)
@@ -1802,7 +1985,7 @@ struct Index {
                           this.editKind = tile.key;
                         });
                       })
-                    }, (tile: KindTile) => tile.rowKey)
+                    }, (tile: KindTile) => this.langVersion + '|' + tile.rowKey)
                   }
                   .width('100%')
                 }
@@ -1815,7 +1998,7 @@ struct Index {
 
                 if (this.needKindToggle()) {
                   Row() {
-                    Text(this.kindExpanded ? '收起' : ('展开全部 ' + DEVICE_KINDS.length + ' 类'))
+                    Text(this.kindExpanded ? this.t('editor_kind_collapse') : this.t('editor_kind_expand', DEVICE_KINDS.length))
                       .fontSize(12)
                       .fontColor(this.theme.primary)
                     Text('▲')
@@ -1838,7 +2021,7 @@ struct Index {
                   })
                 }
 
-                Text('购买日期')
+                Text(this.t('editor_date_label'))
                   .fontSize(12)
                   .fontColor(this.theme.sub)
                   .width('100%')
@@ -1854,12 +2037,12 @@ struct Index {
                     this.editDate = value;
                   })
 
-                Text('备注（可选）')
+                Text(this.t('editor_note_label'))
                   .fontSize(12)
                   .fontColor(this.theme.sub)
                   .width('100%')
                   .margin({ top: 16, bottom: 6 })
-                TextArea({ placeholder: '保修到什么时候、配件花了多少……', text: this.editNote })
+                TextArea({ placeholder: this.t('editor_note_hint'), text: this.editNote })
                   .fontSize(14)
                   .height(72)
                   .fontColor(this.theme.text)
@@ -1872,11 +2055,11 @@ struct Index {
                   })
 
                 Row() {
-                  Text('收藏为最爱')
+                  Text(this.t('editor_fav_label'))
                     .fontSize(14)
                     .fontColor(this.theme.text)
                     .layoutWeight(1)
-                  Text(this.editFavorite ? '已收藏' : '未收藏')
+                  Text(this.editFavorite ? this.t('editor_fav_on') : this.t('editor_fav_off'))
                     .fontSize(12)
                     .fontColor(this.editFavorite ? this.theme.gold : this.theme.sub)
                     .margin({ right: 6 })
@@ -1922,7 +2105,7 @@ struct Index {
             }
 
             Row() {
-              Button('取消')
+              Button(this.t('editor_cancel'))
                 .fontSize(15)
                 .fontColor(this.theme.chipText)
                 .backgroundColor(this.theme.field)
@@ -1939,7 +2122,7 @@ struct Index {
                 .onClick(() => {
                   this.closeEditor();
                 })
-              Button('保存')
+              Button(this.t('editor_save'))
                 .fontSize(15)
                 .fontColor(Color.White)
                 .backgroundColor(this.theme.primary)
@@ -1985,7 +2168,7 @@ struct Index {
             })
 
           Column() {
-            Text('确定删除这台设备？')
+            Text(this.t('delete_title'))
               .fontSize(17)
               .fontWeight(FontWeight.Bold)
               .fontColor(this.theme.text)
@@ -1995,7 +2178,7 @@ struct Index {
               .margin({ top: 8 })
 
             Row() {
-              Button('取消')
+              Button(this.t('delete_cancel'))
                 .fontSize(15)
                 .fontColor(this.theme.chipText)
                 .backgroundColor(this.theme.field)
@@ -2012,7 +2195,7 @@ struct Index {
                 .onClick(() => {
                   this.closeDeleteConfirm();
                 })
-              Button('删除')
+              Button(this.t('delete_confirm'))
                 .fontSize(15)
                 .fontColor(Color.White)
                 .backgroundColor(this.theme.danger)
@@ -2053,6 +2236,86 @@ struct Index {
         .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
       }
 
+      /* ============ 清空回收站的二次确认 ============ */
+      if (this.pendingClearTrash) {
+        Column() {
+          Column()
+            .width('100%')
+            .layoutWeight(1)
+            .focusable(false)
+            .onClick(() => {
+              this.pendingClearTrash = false;
+            })
+
+          Column() {
+            Text(this.t('clear_trash_title'))
+              .fontSize(17)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.theme.text)
+            Text(this.t('clear_trash_message', this.trashList.length))
+              .fontSize(14)
+              .fontColor(this.theme.sub)
+              .margin({ top: 8 })
+
+            Row() {
+              Button(this.t('common_cancel'))
+                .fontSize(15)
+                .fontColor(this.theme.chipText)
+                .backgroundColor(this.theme.field)
+                .borderRadius(12)
+                .height(44)
+                .layoutWeight(1)
+                .stateEffect(false)
+                .focusable(false)
+                .scale({ x: this.sc('clrCancel'), y: this.sc('clrCancel') })
+                .animation({ duration: 140, curve: Curve.EaseOut })
+                .onTouch((e: TouchEvent) => {
+                  this.onPress(e, 'clrCancel');
+                })
+                .onClick(() => {
+                  this.pendingClearTrash = false;
+                })
+              Button(this.t('clear_trash_confirm'))
+                .fontSize(15)
+                .fontColor(Color.White)
+                .backgroundColor(this.theme.danger)
+                .borderRadius(12)
+                .height(44)
+                .layoutWeight(1)
+                .margin({ left: 12 })
+                .stateEffect(false)
+                .focusable(false)
+                .scale({ x: this.sc('clrOk'), y: this.sc('clrOk') })
+                .animation({ duration: 140, curve: Curve.EaseOut })
+                .onTouch((e: TouchEvent) => {
+                  this.onPress(e, 'clrOk');
+                })
+                .onClick(() => {
+                  this.confirmClearTrash();
+                })
+            }
+            .width('100%')
+            .margin({ top: 20 })
+          }
+          .width('80%')
+          .padding(20)
+          .backgroundColor(this.theme.card)
+          .borderRadius(18)
+
+          Column()
+            .width('100%')
+            .layoutWeight(1)
+            .focusable(false)
+            .onClick(() => {
+              this.pendingClearTrash = false;
+            })
+        }
+        .width('100%')
+        .height('100%')
+        .backgroundColor(this.theme.scrim)
+        .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
+      }
+
       if (this.showPrivacy) {
         PrivacyDialog({
           theme: this.theme,
@@ -2085,6 +2348,7 @@ struct Index {
           badgeCount: this.badgeUnlockedCount(),
           badgeTotal: Badges.ALL.length,
           backups: this.backups,
+          languageTag: I18n.preferred(),
           onExport: () => {
             this.exportData();
           },
@@ -2101,6 +2365,9 @@ struct Index {
           onOpenBadges: () => {
             this.showDataSheet = false;
             this.showBadges = true;
+          },
+          onPickLanguage: (tag: string) => {
+            this.pickLanguage(tag);
           },
           onClose: () => {
             this.showDataSheet = false;
@@ -2121,7 +2388,7 @@ struct Index {
             this.deleteForever(id);
           },
           onClear: () => {
-            this.clearTrash();
+            this.askClearTrash();
           },
           onClose: () => {
             this.showTrash = false;
@@ -2175,7 +2442,7 @@ struct Index {
   @Builder
   deleteSwipe(id: string) {
     Row() {
-      Text('删除')
+      Text(this.t('swipe_delete'))
         .fontSize(14)
         .fontColor(Color.White)
     }

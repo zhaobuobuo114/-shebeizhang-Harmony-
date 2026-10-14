@@ -1,7 +1,7 @@
 {
   "modelVersion": "26.0.0",
   "name": "deviceledger",
-  "version": "1.9.1",
+  "version": "2.0.1",
   "description": "设备账 - 记录设备购买日期、价格、使用天数与日均成本",
   "main": "",
   "author": "",

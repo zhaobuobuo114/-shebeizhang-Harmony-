@@ -53,6 +53,7 @@
 | 里程碑勋章 | 14 枚（首台、十台、万元户、用满三年、回本达人……）；点总览卡右侧胶囊开勋章墙，未解锁的灰着并写明达成条件；拿到过就永远亮着，删设备让数字回落也不熄灭 |
 | 达成弹屏 | 点亮勋章时全屏庆祝：勋章自下方升起转半圈、落位轻弹，背后一朵短小烟花（Canvas 逐帧）；一次点亮多枚可左右划看（`Swiper` + 自绘页码）。**不主动震动**——振动接口要 `ohos.permission.VIBRATE`，本应用守住零权限 |
 | 备份与恢复 | 自动滚动备份 5 份、保留 30 天，连回收站与勋章一起走；可从文件恢复，覆盖前必先留底，留底失败即中止。导出文件只写设备与勋章 id，`FORMAT / VERSION / 41 类 key / 14 枚 id` 是与安卓版的互通契约 |
+| 界面语言 | 简体中文 / 繁體中文 / 日本語 / English，默认跟随系统（系统语言不在这四种之内时走英文）；也可在「⋯」面板最前面的语言栏里手动换，**切换立刻生效、不重启** |
 | 昼夜模式 | 右上角太阳 / 月亮按钮切换，选择会被记住；两套配色 + 系统色模式同步 |
 | 首次启动 | 进来先阅读《隐私条款》与《服务条款》，两份条款交给系统浏览器打开；勾选同意后才能进应用，不同意可直接退出，确认过一次就不再打扰 |
 
@@ -81,16 +82,19 @@ DeviceLedger
 │   │   ├── Badge.ets                   14 枚里程碑勋章清单与判定（id / 名称 / 达成条件是双端契约）
 │   │   └── ChartData.ets               按类型聚合成饼图数据
 │   └── utils/
-│       ├── DateUtil.ets                日期解析、天数差（正午日序号）、脏日期修复、人性化文案
-│       ├── DeviceStore.ets             Preferences 增删改查 + 回收站 + 主题持久化（写入用 flushSync）
+│       ├── I18n.ets                    语言中枢：运行时读 rawfile 文案表、取词与复数、解析"跟随系统"
+│       ├── DateUtil.ets                日期解析、天数差（正午日序号）、脏日期修复；存储恒为 yyyy-MM-dd，展示按语言
+│       ├── DeviceStore.ets             Preferences 增删改查 + 回收站 + 主题与语言持久化（写入用 flushSync）
 │       ├── BackupStore.ets             5 份滚动自动备份与恢复（校验 format / version，覆盖前先留底）
 │       ├── Theme.ets                   昼夜两套配色
 │       ├── SystemUi.ets                同步系统色模式（状态栏 / 系统控件）
-│       └── Format.ets                  金额格式化（千分位、日均、色值透明度）
+│       └── Format.ets                  金额格式化（千分位、日均、万/亿 或 K/M/B、色值透明度）
 └── entry/src/main/resources
+    ├── rawfile/i18n/*.json             四语言全量文案表（由根目录 _i18n_master.json 生成，勿手改）
     ├── base/media/dev_*.png            41 张 Q 版设备插画
     ├── base/media/badge_*.png          14 枚勋章插画 + badge_medal（胶囊门面）
     ├── base/media/ic_*.png             主题、收藏、置顶、排序等功能图标与空态插画
+    ├── {base,zh_CN,zh_TW,ja_JP,en_US}/element/string.json   只放桌面可见的模块名与 Ability 名
     └── dark/element/color.json         深色模式资源
 ```
 
@@ -116,8 +120,55 @@ ArkUI 里 `@Builder` 的**参数是按值传递**的：写在父组件里的 `@B
 - `ChartCard` 的图表数据用 JSON **字符串**传递（`@Prop dataAmount: string`），
   避免数组引用不变导致 `@Watch` 不触发。
 - `ForEach` 的 key 用 `DeviceCalc.key(item)`，把名称 / 价格 / 日期 / 类型 / 备注都拼进去，
-  这样编辑后卡片能正确重建。
+  这样编辑后卡片能正确重建。**v2.0.0 起还要在 key 前面掺语言版本号**（`this.langVersion + '|' + …`）：
+  行内文字是渲染时现取的，key 不含语言时框架判定"每一项都没变"，切语言后列表会整体留着上一门语言。
 - `ChartCard` 用 Canvas 命令式绘制，主题切换不会自动重绘，所以在 `theme` 上挂 `@Watch` 手动 `draw()`。
+
+### 语言切换为什么不能靠 `$r()`
+
+两条硬限制叠在一起：
+
+1. `i18n.System.setAppPreferredLanguage()` 的官方说明是 "Resources are loaded in the preferred
+   language **when the application is launched**"——原生资源限定目录**要冷启动才生效**；
+2. `$r('app.string.x')` 的参数必须是编译期字面量，连"按 key 动态取一条"都做不到。
+
+所以全量文案落在 `resources/rawfile/i18n/<locale>.json`，由 `utils/I18n.ets` 在运行时读进内存，
+切换立刻生效、不重建页面。`element/string.json` 只留桌面看得见的模块名与 Ability 名。
+
+第二条限制还带来一个 ArkUI 特有的坑：**状态依赖只在"表达式里读到"时才建立**。
+`I18n.t('x')` 不是状态变量，所以切语言后那行字不会重画。因此每个组件都挂
+`@StorageProp('langVersion')`，取词统一走组件自己的 `this.t()` / `this.qt()`——它们内部读一次该值，
+把依赖挂上。另有几处是"算好存进状态"的**文字快照**（含类型名的图表 JSON、勋章名与条件、
+弹屏条目），不重算就会留着旧语言，由 `Index.onLangChange()` 显式刷新。
+
+安卓端没有这两个限制（`AppCompatDelegate.setApplicationLocales()` 即时生效），
+所以那一端用的是原生 `values-*/strings.xml`。两端文案同源于根目录的 `_i18n_master.json`。
+
+### `onConfigurationUpdate` 里绝不能碰平台 API
+
+`i18n.System.setAppPreferredLanguage()` **不是**"写完就算"，它会同步把配置变更投递回
+`UIAbility.onConfigurationUpdate()`。所以"回调里再调一次 `setPreference()`"这种看起来很自然的写法
+是一条自我调用的回环，实测 59 轮就把栈打爆了（v2.0.0 的切语言闪退）。
+
+固化下来的规矩只有三条，改这块之前先想清楚：
+
+1. 界面里那条主动路径（`Index.pickLanguage`）是唯一能调 `I18n.setPreference()` 的地方，
+   它负责落库、换表、把 `langVersion` 加一；
+2. `onConfigurationUpdate()` 只走 `I18n.refreshFromSystem()`——重解析、换表，不调任何平台 API；
+3. `setPreference()` 用 `applying` 标志把平台调用包住（`try/finally` 复位），
+   同步回调回来时一眼认出"这是我自己"，配合 `isAttached()` 一起直接返回。
+
+`_check_lang_loop.py` 按大括号配平取出方法体来验这三条，全文搜关键字不行——文档注释里也写着这些方法名。
+
+### 「跟随系统」读的是设备语言，不是应用偏好
+
+`getAppPreferredLanguage()` 存的是**本应用**的覆盖值（正是 `setAppPreferredLanguage` 写进去的那份），
+拿它当"系统语言"会让用户切回跟随系统时仍停在上一次的手动选择。
+`I18n.systemTag()` 因此按 SDK 说明的确定程度取值：`getSystemLanguage()`（原话 "Obtains the current
+system language"）→ `getSystemLanguages()`（只说 "list of system languages"，看不出是"当前在用"还是
+"系统支持"，退居第二）→ 偏好列表 → 兜底 `zh`；
+安卓端是同一个坑，对应的是 `LocaleManager.systemLocales`（33+；`Resources.getSystem()` 在
+per-app locale 成为系统能力后也已经被进程级覆盖过，不能用），24–32 才退回 `Resources.getSystem()`。
 
 ## 六、想再加点什么
 
@@ -131,6 +182,8 @@ ArkUI 里 `@Builder` 的**参数是按值传递**的：写在父组件里的 `@B
 
 | 版本 | 内容 |
 | --- | --- |
+| v2.0.1 | 修 v2.0.0 多语言在鸿蒙上的三处问题：① 切语言必崩 `RangeError: Stack overflow!`——`setAppPreferredLanguage` 会**同步**回调 `onConfigurationUpdate`，而该回调里又调了 `setPreference`，两个帧交替重复 59 轮打爆栈；现回调只走新增的 `refreshFromSystem()`（不再碰平台 API），并以 `applying` 标志 + `isAttached()` 两道判断保证回环不可能出现。② 简体中文设备显示英文——`resolve()` 拿整串标签和 `'zh'` 比，真机报的是 `zh-Hans-CN`，永远不相等；改成拆子标签、脚本优先于地区。③ 「跟随系统」粘在上一次手动选择——`getPreferredLanguage()` 返回的是应用自己的覆盖值，改读 `getSystemLanguages()`。另：`attach()` 提到 `setColorMode` 之前（后者也会触发一次配置回调，日志里 239 条 `load before attach` 就是这么来的）。新增 `_test_lang_resolve.mjs`（30 条用例，与安卓 `LangResolveTest` 同表）与 `_check_lang_loop.py`（14 条结构不变量）。**复查第二轮**又修：`onSave` 用 `parseFloat` 把价格**静默截断**（`12abc`→12、`1234,56`→1234，存进账本还不报错；安卓是整串拒绝，两端行为也不同）→ 改严格解析 `Fmt.parsePrice`；`@Builder` 按值传参的三处文案（回收站行、勋章行、导出按钮）永远不随语言变 → 切语言时关掉重开面板；`ChartCard` 的 `langVersion` 没挂 `@Watch`，空数据或简繁同名类型时圆心与图例不重绘 → 补 `onLang`（只重画不重播动画）；设备卡的类型名与日期原先只靠"`ForEach` key 变化会重建子组件"这条未文档保证 → 各自挂上依赖、`sortedList()` 也显式读一次；`onLangChange` 漏算撤销条文案与排序胶囊几何；总览卡「已点亮/总数」读的是不建依赖的普通 Map；金额缩写补跨档进位与 NaN 兜底；`I18n.load` 读错表时静默 → 校验并报错；导入价格补上界 `1e12`。这些**都还没有设备证据**（本机无鸿蒙模拟器），请在模拟器上按 `_存疑清单.md` 2.1 那五件事点验 |
+| v2.0.0 | 全应用多语言（简中 / 繁中 / 日 / 英），默认跟随系统、可在「⋯」面板最前面的语言栏手动切换。原生资源限定目录要冷启动才生效（`setAppPreferredLanguage` 官方说明），故全量文案落在 `resources/rawfile/i18n/*.json` 由 `utils/I18n.ets` 运行时读取，切换原地生效；原先 208 处中文字面量全部入表（与安卓同源：根目录 `_i18n_master.json` → `_i18n_gen.py`）。因 ArkUI 只在表达式读到状态时才建依赖，各组件挂 `@StorageProp('langVersion')` 并统一走 `this.t()`，8 处 `ForEach` 的 key 掺入语言版本号，文字快照由 `onLangChange` 重算。`¥` 与数字保持 ASCII、万/亿 在英文下改 K/M/B、存储日期恒为 `yyyy-MM-dd`；修 4 处拉丁字母下破版的布局（勋章格行数、图表头五项一行、卡片类型行挤压、条款回落）；`LEGACY_MAP` 那 7 条中文是数据键，未翻译 |
 | v1.9.1 | 与安卓版同步：14 枚勋章由 emoji 换成专属 Q 版插画（与安卓同一批 PNG 文件）；达成改为全屏庆祝弹屏——升起转半圈、落位轻弹、Canvas 逐帧烟花、多枚可 `Swiper` 左右划；总览卡右侧新增勋章胶囊。烟花粒子表与安卓 `SparkleView` 的 `SPARKS` 逐行相同。为守住零权限不做主动震动 |
 | v1.9.0 | 一轮彻底排查的修复，与安卓版同步落地：导入校验 format / version 与 devices 数组（此前随便一份 JSON 选覆盖会清空整库）、留底失败即中止、回收站与在册同 id 去重、勋章改为并入而非整体替换、normalize 只判 undefined 导致的 null 崩溃与 `¥NaN` 扩散；天数改用与安卓一致的"正午日序号"（旧写法跨夏令时少算一天）；写盘 `flush` 改 `flushSync`；返回键先关弹层、取消删除收回左滑条、定时器全部留句柄；回收站 / 勋章 / 自动备份三件套首次入库 |
 | v1.8.0 | 首次启动先确认《隐私条款》与《服务条款》：两份条款交给系统浏览器打开，勾选同意后才能进入应用，不同意可直接退出，确认过一次后不再打扰 |

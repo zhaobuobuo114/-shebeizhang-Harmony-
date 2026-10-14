@@ -1,6 +1,13 @@
 import { AppTheme, LIGHT_THEME } from '../utils/Theme';
+import { I18n } from '../utils/I18n';
 
-/** 弹屏里的一页数据 */
+/**
+ * 弹屏里的一页数据。
+ * name 与 dateText 都是**已经本地化好的成品字符串**（由 Index 从 Badges.nameOf /
+ * Badges.dateText 取好传进来），类型保持 string 不动——这里不接 Resource，
+ * 因为 Resource 走资源限定目录、只有冷启动生效，切换语言不会即时变。
+ * 代价是：语言一变，Index 必须重算这两个字段，否则弹屏会继续显示旧语言。
+ */
 export interface CelebrationItem {
   id: string;
   name: string;
@@ -65,6 +72,24 @@ const GRAVITY_VP: number = 14;
  */
 @Component
 export struct BadgeCelebration {
+  /**
+   * 语言版本号：ArkUI 只在表达式里"读到"状态变量时才建立依赖，
+   * this.t() 自己不是状态，所以切语言不会让这行字重画。
+   * 取词一律走下面的 t() / qt()，它们读一次这个值，把依赖挂上。
+   */
+  @StorageProp('langVersion') langVersion: number = 0;
+
+  private t(key: string, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.t(key, ...args);
+  }
+
+  private qt(key: string, count: number, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.qt(key, count, ...args);
+  }
+
+
   @Prop theme: AppTheme = LIGHT_THEME;
   /** 每次都是新构建的覆盖层，所以构造时传入即可，不需要响应式 */
   items: CelebrationItem[] = [];
@@ -199,7 +224,9 @@ export struct BadgeCelebration {
   }
 
   private pageLabel(): string {
-    return this.items.length > 1 ? (this.page + 1) + ' / ' + this.items.length : '';
+    return this.items.length > 1
+      ? this.t('celebrate_page', this.page + 1, this.items.length)
+      : '';
   }
 
   build() {
@@ -239,15 +266,17 @@ export struct BadgeCelebration {
                 .margin({ top: 16 })
                 .maxLines(1)
                 .textOverflow({ overflow: TextOverflow.Ellipsis })
-              Text(item.dateText + ' 达成')
+              Text(this.t('badge_unlocked_at', item.dateText))
                 .fontSize(12)
                 .fontColor(this.theme.primary)
+                .maxLines(1)
+                .textOverflow({ overflow: TextOverflow.Ellipsis })
                 .margin({ top: 6 })
             }
             .width('100%')
             .height('100%')
             .justifyContent(FlexAlign.Center)
-          }, (item: CelebrationItem) => item.id)
+          }, (item: CelebrationItem) => this.langVersion + '|' + item.id)
         }
         .width('100%')
         .height(252)
@@ -266,9 +295,11 @@ export struct BadgeCelebration {
           .textAlign(TextAlign.End)
           .padding({ right: 30 })
 
-        Text('轻点空白处关闭')
+        Text(this.t('celebrate_hint'))
           .fontSize(11)
           .fontColor(this.theme.sub)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .opacity(this.hintOn ? 1 : 0)
           .margin({ top: 30 })
       }

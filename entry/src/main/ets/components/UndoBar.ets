@@ -1,4 +1,5 @@
 import { AppTheme, LIGHT_THEME } from '../utils/Theme';
+import { I18n } from '../utils/I18n';
 
 /** 撤销条的存活时间：给足看清和回手的时间，又不至于一直挡着 */
 const LIFE_MS: number = 5000;
@@ -11,8 +12,32 @@ const LIFE_MS: number = 5000;
  */
 @Component
 export struct UndoBar {
+  /**
+   * 语言版本号：ArkUI 只在表达式里"读到"状态变量时才建立依赖，
+   * this.t() 自己不是状态，所以切语言不会让这行字重画。
+   * 取词一律走下面的 t() / qt()，它们读一次这个值，把依赖挂上。
+   */
+  @StorageProp('langVersion') langVersion: number = 0;
+
+  private t(key: string, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.t(key, ...args);
+  }
+
+  private qt(key: string, count: number, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.qt(key, count, ...args);
+  }
+
+
   @Prop theme: AppTheme = LIGHT_THEME;
-  /** 文案变了说明又删了一台；@Watch 让撤销条重新给足 5 秒 */
+  /**
+   * 文案变了说明又删了一台；@Watch 让撤销条重新给足 5 秒。
+   *
+   * 注意：这是**已本地化的成品文本快照**（Index 用 undo_deleted 拼好后传进来），
+   * 不是只有"再删一台"才会变。语言一切换，Index 必须把这段重算并重新赋值，
+   * 否则条子上会继续显示旧语言的句子（@Watch 顺带还会把 5 秒重新计时，无副作用）。
+   */
   @Prop @Watch('restart') text: string = '';
   /** 点「撤销」 */
   onUndo: () => void = () => {
@@ -79,7 +104,7 @@ export struct UndoBar {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
           .layoutWeight(1)
 
-        Button('撤销')
+        Button(this.t('undo_button'))
           .fontSize(13)
           .fontColor(this.theme.primary)
           .backgroundColor(this.theme.primarySoft)

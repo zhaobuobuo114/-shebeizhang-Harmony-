@@ -14,6 +14,7 @@ const KEY_TRASH: string = 'trash_list';
 const KEY_BADGE: string = 'badge_state';
 const KEY_BACKUP_SLOT: string = 'backup_slot';
 const KEY_BACKUP_AT: string = 'backup_at';
+const KEY_LANGUAGE: string = 'app_language';
 
 /**
  * 本地持久化：使用用户首选项（Preferences）以 JSON 形式保存设备列表与主题。
@@ -109,6 +110,33 @@ export class DeviceStore {
     }
   }
 
+  /**
+   * 界面语言：'system' 或四种 tag 之一。
+   * 默认跟随系统，升级到老版本装过的应用时用户看到的仍是原来那份中文（系统为中文时）。
+   */
+  static loadLanguage(): string {
+    if (DeviceStore.pref === undefined) {
+      return 'system';
+    }
+    try {
+      return DeviceStore.pref.getSync(KEY_LANGUAGE, 'system') as string;
+    } catch (e) {
+      return 'system';
+    }
+  }
+
+  static saveLanguage(tag: string): void {
+    if (DeviceStore.pref === undefined) {
+      return;
+    }
+    try {
+      DeviceStore.pref.putSync(KEY_LANGUAGE, tag);
+      DeviceStore.pref.flushSync();
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'saveLanguage failed: %{public}s', JSON.stringify(e));
+    }
+  }
+
   /** 是否已阅读并同意隐私条款与服务条款（首次启动时确认过一次就记下来） */
   static loadAgreed(): boolean {
     if (DeviceStore.pref === undefined) {
@@ -172,12 +200,24 @@ export class DeviceStore {
     return out;
   }
 
+  /**
+   * 回收站落盘写成扁平结构（设备字段 + deletedAt 同一层）。
+   *
+   * 以前这里是 `JSON.stringify(list)`，把内存里的 TrashItem[] 整坨写下去，
+   * 变成嵌套的 `{item:{…}, deletedAt}`；而 loadTrash 认的是扁平字段。
+   * 于是"存进去再读出来"这台设备就空了：回收站整屏"未命名 · ¥0 · 今天"，
+   * 点恢复还会塞一台空设备回列表。安卓端 saveTrash 写的就是扁平，两端必须一致。
+   */
   static saveTrash(list: TrashItem[]): void {
     if (DeviceStore.pref === undefined) {
       return;
     }
     try {
-      DeviceStore.pref.putSync(KEY_TRASH, JSON.stringify(list));
+      const rows: RawTrash[] = [];
+      for (let i: number = 0; i < list.length; i++) {
+        rows.push(TrashCalc.toRaw(list[i]));
+      }
+      DeviceStore.pref.putSync(KEY_TRASH, JSON.stringify(rows));
       DeviceStore.pref.flushSync();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'save trash failed: %{public}s', JSON.stringify(e));

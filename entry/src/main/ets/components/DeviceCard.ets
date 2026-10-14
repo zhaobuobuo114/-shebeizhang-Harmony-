@@ -1,11 +1,59 @@
 import { kindColor, kindIcon, kindLabel } from '../model/DeviceKind';
 import { DateUtil } from '../utils/DateUtil';
 import { Fmt } from '../utils/Format';
+import { I18n } from '../utils/I18n';
 import { AppTheme, LIGHT_THEME } from '../utils/Theme';
 
 /** 单台设备卡片（点击/滑动由外层 ListItem 负责，星标自己处理点击） */
 @Component
 export struct DeviceCard {
+  /**
+   * 语言版本号：ArkUI 只在表达式里"读到"状态变量时才建立依赖，
+   * this.t() 自己不是状态，所以切语言不会让这行字重画。
+   * 取词一律走下面的 t() / qt()，它们读一次这个值，把依赖挂上。
+   */
+  @StorageProp('langVersion') langVersion: number = 0;
+
+  private t(key: string, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.t(key, ...args);
+  }
+
+  private qt(key: string, count: number, ...args: (string | number)[]): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : I18n.qt(key, count, ...args);
+  }
+
+  /**
+   * 类型名、日期、金额也要挂语言依赖。
+   *
+   * 这三处不是"取词"而是"按 key 现查 / 现格式化"，走不到 t() 那条路上，
+   * 而它们所在的表达式里读不到任何状态变量，元素就不会为它们建依赖。
+   * 眼下切语言时整张卡会随 ForEach 的 key 变化而重建，但那靠的是
+   * "框架把 keyGen 里读到 langVersion 也算进 ForEach 的依赖"这条没有文档保证的行为——
+   * 所以这里自己把依赖挂上，不指望它。
+   * 金额这一条从 v2.0.1 之后是**真有可见后果**的：货币符号改成按语言取
+   * （简中/日文 ¥、繁中 NT$、英文 $），不挂依赖的话切了语言符号还是旧的。
+   */
+  private kindName(key: string): string {
+    const v: number = this.langVersion;
+    return v < 0 ? key : kindLabel(key);
+  }
+
+  private dateText(date: string): string {
+    const v: number = this.langVersion;
+    return v < 0 ? date : DateUtil.displayDate(date);
+  }
+
+  private money(n: number): string {
+    return this.t('fmt_currency') + Fmt.money(n);
+  }
+
+  private smallMoney(n: number): string {
+    return this.t('fmt_currency') + Fmt.smallMoney(n);
+  }
+
+
   @Prop deviceId: string = '';
   @Prop name: string = '';
   @Prop price: number = 0;
@@ -15,7 +63,16 @@ export struct DeviceCard {
   @Prop kindKey: string = 'other';
   @Prop note: string = '';
   @Prop index: number = 0;
-  @Prop favorite: boolean = false;
+  /**
+   * 收藏状态要挂 @Watch。
+   *
+   * 星标画的是本地 @State favOn（点下去要立刻变色），而它原先只在 aboutToAppear 里
+   * 从 @Prop favorite 取一次。恢复备份/回滚快照是**整表替换** deviceList，
+   * 而 ForEach 的 key 刻意不含 favorite（含了会让卡片重建、重播入场动画）→
+   * 组件被复用、aboutToAppear 不再执行 → 数据里已经取消收藏了，那颗星还亮着。
+   * 安卓端不会有这个问题：DiffUtil 比的是整个 DeviceItem，favorite 变了就重绑。
+   */
+  @Prop @Watch('onFavoriteChange') favorite: boolean = false;
   @Prop theme: AppTheme = LIGHT_THEME;
 
   /** 收藏回调，交给页面去落库 */
@@ -61,6 +118,11 @@ export struct DeviceCard {
     this.alive = false;
   }
 
+  /** 外部（恢复快照、整表替换）改了收藏状态时，把本地镜像同步回来 */
+  private onFavoriteChange(): void {
+    this.favOn = this.favorite;
+  }
+
   /** 点星标：先弹大再回落，同时把状态交给页面保存 */
   private tapStar(): void {
     this.favOn = !this.favOn;
@@ -104,7 +166,7 @@ export struct DeviceCard {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .layoutWeight(1)
-          Text('¥' + Fmt.money(this.price))
+          Text(this.money(this.price))
             .fontSize(16)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.theme.text)
@@ -113,17 +175,25 @@ export struct DeviceCard {
         .width('100%')
 
         Row() {
-          Text(kindLabel(this.kindKey))
+          Text(this.kindName(this.kindKey))
             .fontSize(11)
             .fontColor(kindColor(this.kindKey))
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            // 类型名让位给"已用 …"那句：英文类型名（Robot vac / VR headset）比中文长，
+            // 但真正承载信息量的是使用天数，被挤的应该是标签而不是整句
+            .flexShrink(1)
             .backgroundColor(Fmt.tint(kindColor(this.kindKey), '22'))
             .borderRadius(5)
             .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-          Text(this.buyDate)
+          Text(this.dateText(this.buyDate))
             .fontSize(12)
             .fontColor(this.theme.sub)
+            .maxLines(1)
             .margin({ left: 8 })
-          Text('已用 ' + this.days + ' 天 · ' + DateUtil.humanDays(this.days))
+          Text(this.t('card_used_days',
+            this.qt('p_days', this.days, this.days),
+            DateUtil.humanDays(this.days)))
             .fontSize(12)
             .fontColor(this.theme.sub)
             .margin({ left: 8 })
@@ -136,10 +206,11 @@ export struct DeviceCard {
         .alignItems(VerticalAlign.Center)
 
         Row() {
-          Text('日均')
+          Text(this.t('card_avg_label'))
             .fontSize(12)
             .fontColor(this.theme.sub)
-          Text('¥' + Fmt.smallMoney(this.avg))
+            .maxLines(1)
+          Text(this.smallMoney(this.avg))
             .fontSize(17)
             .fontWeight(FontWeight.Bold)
             .fontColor(this.theme.accent)

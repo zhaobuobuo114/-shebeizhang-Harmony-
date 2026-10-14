@@ -1,5 +1,6 @@
 import { DeviceCalc, DeviceItem } from './DeviceItem';
 import { DateUtil } from '../utils/DateUtil';
+import { I18n } from '../utils/I18n';
 
 /**
  * 里程碑勋章：给记设备这件事配上一点达成感。
@@ -8,16 +9,20 @@ import { DateUtil } from '../utils/DateUtil';
  * 之后即便数字回落（比如删掉设备导致总投入下降），勋章也不会熄灭，
  * 这一点和 QQ 的勋章墙一致：拿到过就是拿到过。
  *
- * 清单、id、名称、达成条件文案必须与安卓端逐项一致——导出文件里只写 id，
+ * 清单、id、达成条件必须与安卓端逐项一致——导出文件里只写 id，
  * 这三样对不上，从一端导出的文件在另一端就会认错或认不出勋章。
  * 图案（icon）是各端自己的呈现物，不参与互通：安卓与鸿蒙共用同一批插画，
  * 改图案不需要动另一端，改上面三样必须同时改两端。
+ *
+ * 名称与条件文案（nameKey/descKey）是四语言表里的资源键，表里存的必须与
+ * _i18n_master.json 的 badge_<id>_name / badge_<id>_desc 对齐；
+ * 展示一律走 Badges.nameOf/descOf，不要在本表里写死任何文案。
  */
 export interface BadgeDef {
-  id: string;      // 唯一标识，写进导出文件
-  name: string;    // 勋章名
-  desc: string;    // 达成条件说明
-  icon: Resource;  // 专属徽章插画（resources/base/media/badge_*.png）
+  id: string;       // 唯一标识，写进导出文件
+  nameKey: string;  // 勋章名的资源键：badge_<id>_name
+  descKey: string;  // 达成条件说明的资源键：badge_<id>_desc
+  icon: Resource;   // 专属徽章插画（resources/base/media/badge_*.png）
 }
 
 /** 一次判定需要的全部统计量 */
@@ -32,28 +37,35 @@ export interface BadgeStat {
 }
 
 export class Badges {
-  /** 达成过就不再熄灭 */
-  static readonly KEEP_AFTER_DELETE: boolean = true;
-
   /** 总览卡胶囊里那颗通用奖牌：不随解锁情况变化，只当"勋章"这件事的门面 */
   static readonly MEDAL: Resource = $r('app.media.badge_medal');
 
   static readonly ALL: BadgeDef[] = [
-    { id: 'first_device', name: '初次见面', desc: '记录第一台设备', icon: $r('app.media.badge_first_device') },
-    { id: 'count_10', name: '十全十美', desc: '设备数达到 10 台', icon: $r('app.media.badge_count_10') },
-    { id: 'count_25', name: '成群结队', desc: '设备数达到 25 台', icon: $r('app.media.badge_count_25') },
-    { id: 'spend_1k', name: '小有积蓄', desc: '总投入超过 1000 元', icon: $r('app.media.badge_spend_1k') },
-    { id: 'spend_10k', name: '万元户', desc: '总投入超过 10000 元', icon: $r('app.media.badge_spend_10k') },
-    { id: 'spend_50k', name: '家底殷实', desc: '总投入超过 50000 元', icon: $r('app.media.badge_spend_50k') },
-    { id: 'fav_3', name: '心头好', desc: '收藏 3 台设备', icon: $r('app.media.badge_fav_3') },
-    { id: 'fav_10', name: '宠爱有加', desc: '收藏 10 台设备', icon: $r('app.media.badge_fav_10') },
-    { id: 'days_365', name: '长情相伴', desc: '有设备用满 365 天', icon: $r('app.media.badge_days_365') },
-    { id: 'days_1095', name: '三年之约', desc: '有设备用满 1095 天', icon: $r('app.media.badge_days_1095') },
-    { id: 'kind_8', name: '品类达人', desc: '覆盖 8 种设备类型', icon: $r('app.media.badge_kind_8') },
-    { id: 'kind_20', name: '面面俱到', desc: '覆盖 20 种设备类型', icon: $r('app.media.badge_kind_20') },
-    { id: 'roi', name: '回本达人', desc: '有设备日均低于 0.5 元', icon: $r('app.media.badge_roi') },
-    { id: 'big_ticket', name: '大手笔', desc: '单台设备超过 5000 元', icon: $r('app.media.badge_big_ticket') }
+    { id: 'first_device', nameKey: 'badge_first_device_name', descKey: 'badge_first_device_desc', icon: $r('app.media.badge_first_device') },
+    { id: 'count_10', nameKey: 'badge_count_10_name', descKey: 'badge_count_10_desc', icon: $r('app.media.badge_count_10') },
+    { id: 'count_25', nameKey: 'badge_count_25_name', descKey: 'badge_count_25_desc', icon: $r('app.media.badge_count_25') },
+    { id: 'spend_1k', nameKey: 'badge_spend_1k_name', descKey: 'badge_spend_1k_desc', icon: $r('app.media.badge_spend_1k') },
+    { id: 'spend_10k', nameKey: 'badge_spend_10k_name', descKey: 'badge_spend_10k_desc', icon: $r('app.media.badge_spend_10k') },
+    { id: 'spend_50k', nameKey: 'badge_spend_50k_name', descKey: 'badge_spend_50k_desc', icon: $r('app.media.badge_spend_50k') },
+    { id: 'fav_3', nameKey: 'badge_fav_3_name', descKey: 'badge_fav_3_desc', icon: $r('app.media.badge_fav_3') },
+    { id: 'fav_10', nameKey: 'badge_fav_10_name', descKey: 'badge_fav_10_desc', icon: $r('app.media.badge_fav_10') },
+    { id: 'days_365', nameKey: 'badge_days_365_name', descKey: 'badge_days_365_desc', icon: $r('app.media.badge_days_365') },
+    { id: 'days_1095', nameKey: 'badge_days_1095_name', descKey: 'badge_days_1095_desc', icon: $r('app.media.badge_days_1095') },
+    { id: 'kind_8', nameKey: 'badge_kind_8_name', descKey: 'badge_kind_8_desc', icon: $r('app.media.badge_kind_8') },
+    { id: 'kind_20', nameKey: 'badge_kind_20_name', descKey: 'badge_kind_20_desc', icon: $r('app.media.badge_kind_20') },
+    { id: 'roi', nameKey: 'badge_roi_name', descKey: 'badge_roi_desc', icon: $r('app.media.badge_roi') },
+    { id: 'big_ticket', nameKey: 'badge_big_ticket_name', descKey: 'badge_big_ticket_desc', icon: $r('app.media.badge_big_ticket') }
   ];
+
+  /** 勋章名：每次现取，切换语言后勋章墙与弹屏立刻跟着变 */
+  static nameOf(def: BadgeDef): string {
+    return I18n.t(def.nameKey);
+  }
+
+  /** 达成条件说明 */
+  static descOf(def: BadgeDef): string {
+    return I18n.t(def.descKey);
+  }
 
   static byId(id: string): BadgeDef | undefined {
     for (let i: number = 0; i < Badges.ALL.length; i++) {
@@ -168,7 +180,12 @@ export class Badges {
     return fresh;
   }
 
-  /** 勋章获得日期的展示文案，如「2026.03.05」 */
+  /**
+   * 勋章获得日期，只给日期本身（如「2026.03.05」/「Mar 5, 2026」，按当前语言）。
+   * 「{0} 达成」这句完整文案由调用方用 I18n.t('badge_unlocked_at', …) 组装，
+   * 这里不掺文案——英文是「Earned Mar 5, 2026」，语序和中文相反，
+   * 在本表里拼死语序就没法跟着语言走了。
+   */
   static dateText(at: number): string {
     return DateUtil.formatStamp(at);
   }
