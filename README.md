@@ -55,7 +55,7 @@
 | 备份与恢复 | 自动滚动备份 5 份、保留 30 天，连回收站与勋章一起走；可从文件恢复，覆盖前必先留底，留底失败即中止。导出文件只写设备与勋章 id，`FORMAT / VERSION / 41 类 key / 14 枚 id` 是与安卓版的互通契约 |
 | 界面语言 | 简体中文 / 繁體中文 / 日本語 / English，默认跟随系统（系统语言不在这四种之内时走英文）；也可在「⋯」面板最前面的语言栏里手动换，**切换立刻生效、不重启** |
 | 昼夜模式 | 右上角太阳 / 月亮按钮切换，选择会被记住；两套配色 + 系统色模式同步 |
-| 首次启动 | 进来先阅读《隐私条款》与《服务条款》，两份条款交给系统浏览器打开；勾选同意后才能进应用，不同意可直接退出，确认过一次就不再打扰 |
+| 首次启动 | 装完打开直接进主页面，没有开屏条款确认，也不拦新用户；本应用零权限、不联网，数据只存本机 |
 
 ## 三、目录结构
 
@@ -69,7 +69,6 @@ DeviceLedger
 │   │   ├── SummaryCard.ets             顶部总览卡（数字滚动动画 + 勋章胶囊入口）
 │   │   ├── ChartCard.ets               环形扇形统计图（Canvas 手绘 + 展开动画）
 │   │   ├── DeviceCard.ets              单台设备卡（错峰入场动画）
-│   │   ├── PrivacyDialog.ets           首次启动的条款确认（勾选同意 / 退出应用）
 │   │   ├── BadgeWall.ets               勋章墙（未解锁去饱和 + 35% 透明）
 │   │   ├── BadgeCelebration.ets        达成庆祝弹屏（升起转半圈 + Canvas 逐帧烟花 + Swiper 翻页）
 │   │   ├── TrashSheet.ets              回收站弹层（还原 / 彻底删除）
@@ -182,6 +181,7 @@ per-app locale 成为系统能力后也已经被进程级覆盖过，不能用�
 
 | 版本 | 内容 |
 | --- | --- |
+| v2.0.2 | `versionName 2.0.2` / `versionCode 2000200`。三件事：① **删掉开屏的条款确认页**，新老用户装完直接进主页面（只改鸿蒙，安卓保留；`PrivacyDialog.ets` 移出工程，`privacy_agreed` 那条偏好链路的读方一并删）。② 页脚 GitHub 链接收进文字里，只露 `GitHub` 一个词（`Text(){Span+Span}`，点击挂父 `Text` 否则双触发）。③ **修导出数据是 0 字节空壳、导入找不到文件（P0）**，三个独立成因：`writeText` 拿 picker 的 `file://` URI 去做 `accessSync`/`mkdirSync`（这俩只收沙箱路径，实测抛 `13900012`，选择器已建好的空文件就此留成空壳，而调用方只 `if (ok)` 不吭声）；`fileSuffixChoices=['json']` 少个点（官方格式「描述\|后缀」，整串都是后缀，于是文件名成了 `…-1155json`）；导入选择器默认停在「最近」页，那一页对 `.json` 一个都不列。改后 URI 走 `openSync(READ_WRITE\|CREATE)`+`truncateSync`、写完比对字节数，`readText` 不再 `statSync(URI)` 而是循环读到 EOF，`fileSuffixChoices` 补点，两个选择器带 `defaultFilePathUri`，返回值换 `ExportOutcome`/`ImportOutcome` 把「取消」与「真失败」分开并各自出声。真机：导出 toast `Exported 11 devices`、文件管理实拍 2.43 KB、导入直接落在 Download 并列出备份、`Nothing new to merge`、hilog 零错误；`_test_lang_device_harmony.py` 102 条断言 0 失败。 |
 | v2.0.1 | 修 v2.0.0 多语言在鸿蒙上的三处问题：① 切语言必崩 `RangeError: Stack overflow!`——`setAppPreferredLanguage` 会**同步**回调 `onConfigurationUpdate`，而该回调里又调了 `setPreference`，两个帧交替重复 59 轮打爆栈；现回调只走新增的 `refreshFromSystem()`（不再碰平台 API），并以 `applying` 标志 + `isAttached()` 两道判断保证回环不可能出现。② 简体中文设备显示英文——`resolve()` 拿整串标签和 `'zh'` 比，真机报的是 `zh-Hans-CN`，永远不相等；改成拆子标签、脚本优先于地区。③ 「跟随系统」粘在上一次手动选择——`getPreferredLanguage()` 返回的是应用自己的覆盖值，改读 `getSystemLanguages()`。另：`attach()` 提到 `setColorMode` 之前（后者也会触发一次配置回调，日志里 239 条 `load before attach` 就是这么来的）。新增 `_test_lang_resolve.mjs`（30 条用例，与安卓 `LangResolveTest` 同表）与 `_check_lang_loop.py`（14 条结构不变量）。**复查第二轮**又修：`onSave` 用 `parseFloat` 把价格**静默截断**（`12abc`→12、`1234,56`→1234，存进账本还不报错；安卓是整串拒绝，两端行为也不同）→ 改严格解析 `Fmt.parsePrice`；`@Builder` 按值传参的三处文案（回收站行、勋章行、导出按钮）永远不随语言变 → 切语言时关掉重开面板；`ChartCard` 的 `langVersion` 没挂 `@Watch`，空数据或简繁同名类型时圆心与图例不重绘 → 补 `onLang`（只重画不重播动画）；设备卡的类型名与日期原先只靠"`ForEach` key 变化会重建子组件"这条未文档保证 → 各自挂上依赖、`sortedList()` 也显式读一次；`onLangChange` 漏算撤销条文案与排序胶囊几何；总览卡「已点亮/总数」读的是不建依赖的普通 Map；金额缩写补跨档进位与 NaN 兜底；`I18n.load` 读错表时静默 → 校验并报错；导入价格补上界 `1e12`。。这些后来在 Mate 90 Pro 模拟器上按 `tools/_test_lang_device_harmony.py` 跑过 **97 条文本树断言、0 失败**——崩溃只认 `/data/log/faultlog/faultlogger` 里多出来的 jscrash 文件，不认肉眼看到的画面。**第三轮（六项改动）**：货币符号按语言（简体中文与日语 `¥`、繁體中文 `NT$`、英文 `$`，数值不换算）；「⋯」面板标题由「数据与备份」改为「菜单」；选完语言直接回到主页面；勋章墙补 `layoutWeight` 修最下方兜不住、格子露出卡片；列表底部新增可点击的个人主页链接；扇形统计图重做材质（圆角扇端 + 每片径向渐变 + 内圈高光 + 底部阴影环）。**第四轮（拍商店截图时查出）**：回收站落盘形状与读取形状不一致——`saveTrash` 曾把内存里的 `TrashItem[]` 整坨写成嵌套 `{item:{…},deletedAt}`，而 `loadTrash` 认的是扁平字段，于是重启后每条回收站记录都变成「未命名 · ¥0 · 今天」，点「恢复」会把一台空设备塞回台账；现在写扁平（与安卓版及两端通用备份格式一致），读取两种形状都认，已落盘的旧数据下次启动即正常显示。同轮另修：汇总卡「最划算」漏货币符号、编辑器价格标签固定写「（元）/（CNY）」。 |
 | v2.0.0 | 全应用多语言（简中 / 繁中 / 日 / 英），默认跟随系统、可在「⋯」面板最前面的语言栏手动切换。原生资源限定目录要冷启动才生效（`setAppPreferredLanguage` 官方说明），故全量文案落在 `resources/rawfile/i18n/*.json` 由 `utils/I18n.ets` 运行时读取，切换原地生效；原先 208 处中文字面量全部入表（与安卓同源：`tools/_i18n_master.json` → `_i18n_gen.py`）。因 ArkUI 只在表达式读到状态时才建依赖，各组件挂 `@StorageProp('langVersion')` 并统一走 `this.t()`，8 处 `ForEach` 的 key 掺入语言版本号，文字快照由 `onLangChange` 重算。`¥` 与数字保持 ASCII、万/亿 在英文下改 K/M/B、存储日期恒为 `yyyy-MM-dd`；修 4 处拉丁字母下破版的布局（勋章格行数、图表头五项一行、卡片类型行挤压、条款回落）；`LEGACY_MAP` 那 7 条中文是数据键，未翻译 |
 | v1.9.1 | 与安卓版同步：14 枚勋章由 emoji 换成专属 Q 版插画（与安卓同一批 PNG 文件）；达成改为全屏庆祝弹屏——升起转半圈、落位轻弹、Canvas 逐帧烟花、多枚可 `Swiper` 左右划；总览卡右侧新增勋章胶囊。烟花粒子表与安卓 `SparkleView` 的 `SPARKS` 逐行相同。为守住零权限不做主动震动 |

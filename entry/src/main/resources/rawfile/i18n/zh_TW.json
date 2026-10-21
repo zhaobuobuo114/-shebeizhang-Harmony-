@@ -127,7 +127,7 @@
     "fmt_m": "百萬",
     "fmt_wan": "萬",
     "fmt_yi": "億",
-    "footer_github": "我的 GitHub：{0}",
+    "footer_github": "我的 GitHub",
     "import_backup_unreadable": "這份備份讀不出來",
     "import_cancel": "取消",
     "import_chooser_title": "匯出裝置帳資料",

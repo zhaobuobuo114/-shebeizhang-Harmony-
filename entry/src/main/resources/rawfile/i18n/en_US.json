@@ -127,7 +127,7 @@
     "fmt_m": "M",
     "fmt_wan": "K",
     "fmt_yi": "B",
-    "footer_github": "My GitHub: {0}",
+    "footer_github": "My GitHub",
     "import_backup_unreadable": "This backup can’t be read",
     "import_cancel": "Cancel",
     "import_chooser_title": "Export Device Ledger data",

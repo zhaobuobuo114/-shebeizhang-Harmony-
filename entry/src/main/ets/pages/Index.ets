@@ -8,13 +8,12 @@ import { Fmt } from '../utils/Format';
 import { AppTheme, LIGHT_THEME, themeOf } from '../utils/Theme';
 import { applyColorMode } from '../utils/SystemUi';
 import { promptAction } from '@kit.ArkUI';
-import { BackupFile, BackupStore, Snapshot } from '../utils/BackupStore';
+import { BackupFile, BackupStore, ExportOutcome, ImportOutcome, Snapshot } from '../utils/BackupStore';
 import { BadgeDef, Badges } from '../model/Badge';
 import { TrashItem } from '../model/TrashItem';
 import { SummaryCard } from '../components/SummaryCard';
 import { ChartCard } from '../components/ChartCard';
 import { DeviceCard } from '../components/DeviceCard';
-import { PrivacyDialog } from '../components/PrivacyDialog';
 import { DataSheet } from '../components/DataSheet';
 import { TrashSheet } from '../components/TrashSheet';
 import { BadgeCell, BadgeWall } from '../components/BadgeWall';
@@ -24,10 +23,15 @@ import { common, Want } from '@kit.AbilityKit';
 
 /**
  * 页脚那条链接指向作者的 GitHub。安卓端 `MainActivity.kt` 顶部有同一个常量，值必须一致。
- * 放进代码而不是文案表：四门语言的 `footer_github` 都只是「我的 GitHub：{0}」这个句式，
- * URL 是数据，不该有机会被译歪。
+ * 放进代码而不是文案表：URL 是数据，不该有机会被译歪。
+ *
+ * 屏幕上不再出现这串地址：它作为超链接挂在文案里字面量「GitHub」这个词上，
+ * 所以 `footer_github` 四门语言都只是「我的 GitHub」这一句。
  */
 const GITHUB_URL: string = 'https://github.com/zhaobuobuo114';
+
+/** 四种语言的这条文案里都出现这个字面量，按它把整行切成「前缀 + 链接词」两段 */
+const GITHUB_LINK_WORD: string = 'GitHub';
 
 interface SortOption {
   label: string;
@@ -155,9 +159,6 @@ struct Index {
   /** 撤销条管着的这台设备，时间到了就作废 */
   private undoTrash: TrashItem | undefined = undefined;
 
-  // 首次启动的条款确认：没勾选同意之前，不把本机数据读进界面
-  @State showPrivacy: boolean = false;
-
   // 空态图标的呼吸动画
   @State bob: boolean = false;
 
@@ -216,15 +217,11 @@ struct Index {
 
   aboutToAppear(): void {
     this.theme = themeOf(DeviceStore.loadDark());
-    // 第一次进来先确认条款，同意之后才读本机数据
-    this.showPrivacy = !DeviceStore.loadAgreed();
-    if (!this.showPrivacy) {
-      this.deviceList = DeviceStore.load();
-      this.trashList = DeviceStore.loadTrash(BackupStore.KEEP_DAYS);
-      this.badgeState = DeviceStore.loadBadges();
-      this.refreshStats();
-      this.checkBadges(false);
-    }
+    this.deviceList = DeviceStore.load();
+    this.trashList = DeviceStore.loadTrash(BackupStore.KEEP_DAYS);
+    this.badgeState = DeviceStore.loadBadges();
+    this.refreshStats();
+    this.checkBadges(false);
     this.bobTimer = setTimeout(() => {
       this.bobTimer = -1;
       this.bob = true;
@@ -248,10 +245,6 @@ struct Index {
   }
 
   onPageShow(): void {
-    if (this.showPrivacy) {
-      // 条款还没确认，这一屏不做任何数据刷新
-      return;
-    }
     // 回到前台时对齐一次磁盘数据（跨天时天数也会重算）
     const disk: DeviceItem[] = DeviceStore.load();
     if (disk.length !== this.deviceList.length) {
@@ -268,10 +261,6 @@ struct Index {
    * 再进来时面板还开着，用户以为是应用卡住了。
    */
   onBackPress(): boolean {
-    if (this.showPrivacy) {
-      // 条款还没确认，这一屏不给返回
-      return true;
-    }
     if (this.showCelebration) {
       // 庆祝弹屏压在最上层，返回键先关它
       this.showCelebration = false;
@@ -1285,18 +1274,28 @@ struct Index {
   /** 弹系统文件选择器存成一个 .json */
   private async exportData(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const ok: boolean = await BackupStore.saveViaPicker(ctx, this.currentSnapshot());
-    if (ok) {
-      // 与安卓版同一句：报台数，不然用户不知道到底带走了多少条
-      this.toast(this.t('import_exported', this.deviceList.length));
+    const out: ExportOutcome = await BackupStore.saveViaPicker(ctx, this.currentSnapshot());
+    if (out.cancelled) {
+      return;
     }
+    // 取消不吭声，但写失败必须说出来：选择器已经先把空文件建好了，
+    // 不报错用户就会把一个 0 字节空壳当成备份带走
+    this.toast(out.written
+      ? this.t('import_exported', this.deviceList.length)
+      : this.t('import_export_failed'));
   }
 
   /** 弹系统文件选择器挑一个 .json 进来 */
   private async importData(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const snap: Snapshot | undefined = await BackupStore.pickViaPicker(ctx);
+    const picked: ImportOutcome = await BackupStore.pickViaPicker(ctx);
+    if (picked.cancelled) {
+      return;
+    }
+    const snap: Snapshot | undefined = picked.snapshot;
     if (snap === undefined) {
+      // 挑到了别的 json 也得说一句，否则用户以为点了没反应
+      this.toast(this.t('import_unreadable'));
       return;
     }
     // 导入前先把当前状态强制留一份底；留底没成功就不能动本机数据
@@ -1354,9 +1353,24 @@ struct Index {
   }
 
   /**
-   * 用系统浏览器打开作者的 GitHub。机器上没有可打开的浏览器时静默失败——
-   * 与隐私弹窗里那两个链接同一套做法（`PrivacyDialog.openUrl`）：点不动就是点不动，
-   * 不该拿一条报错打断用户。
+   * 页脚那一行的前段：把 "GitHub" 之前的部分（「我的 」/「My 」）单独画成次要色。
+   * 万一某条译文里没有这个字面量，就整行当普通文字返回，链接段留空 ——
+   * 整行仍可点（Text 上的 onClick），不会变成死链。
+   */
+  private footerGithubHead(): string {
+    const full: string = this.t('footer_github');
+    const at: number = full.indexOf(GITHUB_LINK_WORD);
+    return at < 0 ? full : full.substring(0, at);
+  }
+
+  /** 页脚那一行的链接段：屏幕上只有这几个字带下划线，地址不进文案 */
+  private footerGithubWord(): string {
+    return this.t('footer_github').indexOf(GITHUB_LINK_WORD) < 0 ? '' : GITHUB_LINK_WORD;
+  }
+
+  /**
+   * 用系统浏览器打开作者的 GitHub。机器上没有可打开的浏览器时静默失败：
+   * 点不动就是点不动，不该拿一条报错打断用户。
    */
   private openGitHub(): void {
     try {
@@ -1734,16 +1748,23 @@ struct Index {
           /* 整页最后一项，空列表时也在（安卓端是 NestedScrollView 里最后一个 TextView）。
              文字走 this.t() 所以跟着语言刷；URL 是常量，不进文案表。 */
           ListItem() {
-            Text(this.t('footer_github', GITHUB_URL))
-              .fontSize(12)
-              .fontColor(this.theme.primary)
-              .textAlign(TextAlign.Center)
-              .width('100%')
-              .padding({ top: 10, bottom: 10 })
-              .focusable(false)
-              .onClick(() => {
-                this.openGitHub();
-              })
+            Text() {
+              Span(this.footerGithubHead())
+                .fontColor(this.theme.sub)
+              Span(this.footerGithubWord())
+                .fontColor(this.theme.primary)
+                .decoration({ type: TextDecorationType.Underline, color: this.theme.primary })
+            }
+            .fontSize(12)
+            .textAlign(TextAlign.Center)
+            .width('100%')
+            .padding({ top: 10, bottom: 10 })
+            .focusable(false)
+            /* 点击挂在 Text 上而不是 Span 上：Span 的 onClick 与父 Text 的会双触发，
+               一次点击发两遍 startAbility 没必要；整行可点也和安卓版一致。 */
+            .onClick(() => {
+              this.openGitHub();
+            })
           }
         }
         .width('100%')
@@ -2314,29 +2335,6 @@ struct Index {
         .height('100%')
         .backgroundColor(this.theme.scrim)
         .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
-      }
-
-      if (this.showPrivacy) {
-        PrivacyDialog({
-          theme: this.theme,
-          onAgree: () => {
-            DeviceStore.saveAgreed(true);
-            this.showPrivacy = false;
-            this.deviceList = DeviceStore.load();
-            this.trashList = DeviceStore.loadTrash(BackupStore.KEEP_DAYS);
-            this.badgeState = DeviceStore.loadBadges();
-            this.refreshStats();
-            this.checkBadges(false);
-          },
-          onExit: () => {
-            try {
-              const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-              ctx.terminateSelf();
-            } catch (e) {
-              // 结束不掉就留在确认页，不做别的处理
-            }
-          }
-        })
       }
 
       /* ============ 数据与备份 ============ */

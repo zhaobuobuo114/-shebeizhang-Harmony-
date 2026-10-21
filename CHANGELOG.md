@@ -5,8 +5,108 @@
 
 ---
 
-## v2.0.1（2026-10-13）
+## v2.0.2（2026-10-21）
 
+三件事：**去掉开屏的条款确认页**、**页脚 GitHub 链接收进文字里**、**修导出数据是 0 字节空壳 / 导入找不到文件（P0）**。
+`versionName` 2.0.2、`versionCode` 2000200（沿用 1.9.1=1900100、2.0.0=2000000、2.0.1=2000100 的规律），
+`oh-package.json5` 的 version 一并跟上。
+
+**去掉开屏的条款确认页**：不管新老用户，装完打开直接进主页面，不再拦一次勾选确认。
+
+这一项**只改鸿蒙**。安卓版（`ui/PrivacyGate.kt` + `res/layout/dialog_privacy.xml`）保留确认页，
+两端从这一版起在这件事上不一致，是按需求有意为之，不是漏改。
+
+### 动了什么
+
+- `pages/Index.ets`：`@State showPrivacy` 连同它的六处引用一并删除。
+  `aboutToAppear()` 原来靠 `DeviceStore.loadAgreed()` 决定要不要读本机数据，现在无条件读；
+  `onPageShow()` 与 `onBackPress()` 开头那两段"条款没确认就什么都不做 / 不给返回"的拦截删掉；
+  `Stack` 末段 `if (this.showPrivacy) { PrivacyDialog({...}) }` 这层覆盖删掉。
+- `utils/DeviceStore.ets`：`KEY_AGREED`（偏好键名 `privacy_agreed`）与 `loadAgreed()` / `saveAgreed()` 删除。
+  全工程 grep 过，除这条链路以外无人引用，属于随之到期的死代码。
+- `components/PrivacyDialog.ets`：组件文件移出工程（留在 `_待删/隐私弹窗/`，没有直接销毁）。
+- 页脚 GitHub 链接的文档注释原来写"与 `PrivacyDialog.openUrl` 同一套做法"，组件没了，改成自述。
+
+### 明确没动什么
+
+- 四门语言文案表里那 8 条 `privacy_*` **原样保留**。它们由 `tools/_i18n_master.json` 一次生成到两端资源，
+  安卓版 `dialog_privacy.xml` 还在引用；删了会打断安卓端构建，也违背"只改鸿蒙"。
+  `_check_i18n.py` 没有"未用键"这一项，鸿蒙留着不报错。
+- 老用户偏好文件里已经写下的 `privacy_agreed` 仍留在原处，只是再没有代码读它。
+  不为此加一次数据迁移：为了清一个布尔值去改写用户的数据文件，风险大于收益。
+- 应用依旧零权限、不联网，`module.json5` 没有任何改动。
+
+### 一个要你拍板的后果
+
+条款页是这个应用里**唯一**能触到那两条政策链接（`policiesforge.com`）的地方，两端都是。
+现在鸿蒙端应用内再也找不到隐私条款入口了。应用不收集任何信息、不申请权限，
+但上架审核有时仍会要求"应用内可查阅隐私政策"。如果要补，最小做法是在「⋯」面板里加一行
+非阻断的《隐私条款》《服务条款》，点开的就是那两个链接——等你点头再加，本轮没做。
+
+### 验证
+
+- `hvigorw assembleHap` BUILD SUCCESSFUL，ArkTS 告警 38 → 34，减掉的 4 条正是被删组件自带的
+  （2 `animateTo` + 1 `getContext` + 1 `showToast`），**无新增**、无 error。
+- 包级扫描：新包 79 个条目里 `PrivacyDialog` / `privacy_agreed` / `showPrivacy` / `loadAgreed` /
+  `saveAgreed` **零命中**；同一把尺子量 v2.0.1 正式包，五个符号全在。
+- 同一台设备、同一份空数据上装旧包 vs 新包：首屏文本节点 32 → 25，少的正是弹窗那 7 条，
+  主页面其余文本一字不差。
+- `_check_i18n.py` / `_check_interop.py` / `_check_lang_loop.py` 三道闸门 rc=0；
+  `_test_lang_resolve.mjs` 30 条、`_test_fmt_tier.mjs` 92 条均 0 失败。
+- 真机（Mate 90 Pro 模拟器）：新增 `_verify_no_privacy.py` 17 条断言全过；
+  原 97 条语言回归套件重跑 **97 过 0 败**，全程无新增 jscrash。
+  菜单开合、编辑器开合、取消不落库、返回键退出、回收站还原、四语言与深浅色都在覆盖内。
+
+### 追加一：页脚那条 GitHub 链接收进文字里
+
+原来页脚整行就是裸 URL。现在四门语言都只露出 `GitHub` 这一个词，URL 不再出现在界面上：
+`Text() { Span(前缀) Span(链接词) }`，链接词加下划线着色，点击挂在**父 `Text`** 上而不是 `Span` 上
+（`Span.onClick` 与父 `Text.onClick` 会双触发，实测会打开两次）。
+
+- `pages/Index.ets:34` 新增 `GITHUB_LINK_WORD`，`:1360 footerGithubHead()` / `:1367 footerGithubWord()`
+  按这个词把文案切成两段。**词在文案里找不到时退回整行普通文本**，不硬切。
+- 主表 `footer_github` 随之去掉 `{0}` 占位符（四语言重生成，`_check_i18n.py` 校过）。
+
+### 追加二：导出数据是 0 字节空壳、导入找不到文件（P0）
+
+三个独立成因叠在一起，每个都够单独出事：
+
+1. **写入被文件沙箱拒掉**。`BackupStore.writeText()` 无条件对路径做 `lastIndexOf('/')` + `accessSync` +
+   `mkdirSync`，而选择器返回的是 `file://docs/...` **URI 不是沙箱路径**（`@ohos.file.fs.d.ts:315` 写明
+   `accessSync` 收 "Application sandbox path"），于是抛 `13900012 Permission denied`——真机 hilog 抓到了这一条。
+   选择器已经把空文件建好，写入整个失败 → 用户拿走一个**空壳**。而调用方只写 `if (ok)`，失败连一声都不吭。
+2. **文件名少一个点**。`fileSuffixChoices = ['json']`：官方格式是「描述|后缀」，没有 `|` 时**整串就是后缀**
+   （`@ohos.file.picker.d.ts:587`）。选择器把 `.json` 从名字里剥掉、又拼回一个不带点的 `json`，
+   实拍文件名栏 `device-ledger-20261021-1155json`。
+3. **导入选择器停在「最近」页**，那一页对 `.json` 一个都不列（实拍整页「没有文件」），于是"找不到刚导出的文件"。
+
+改法（`utils/BackupStore.ets`）：
+
+- `:585 isUri()` + `:596 writeText()`：URI 走 `openSync(READ_WRITE|CREATE)` + `truncateSync(fd, 0)`
+  （覆盖旧文件必须清空，否则尾部留着上一份的残字节，整份 JSON 就废了）；只有沙箱路径才 mkdir。
+  写完把 `writeSync` 返回的字节数和 `TextEncoder` 算出的 UTF-8 长度比，**少一个字节都算失败**。
+- `:627 readText()`：先开句柄，再按 64KB 循环读到 EOF，不再 `statSync(URI)`（URI 要到 API 22 才允许传进
+  `statSync`）；撞到循环上限就当读失败，绝不交出一份被截断的"前半截"。
+- `:489` / `:523`：`fileSuffixChoices` 改 `['.json']`；两个选择器都带 `defaultFilePathUri`（`:109`，Download），
+  个别 ROM 不认这个目录就退回不设目录再开一次；返回值从 `boolean` / `Snapshot|undefined` 换成
+  `ExportOutcome` / `ImportOutcome`（`:33` / `:39`），把"用户取消"和"真的没成"分开。
+- `pages/Index.ets:1275` / `:1289`：取消不提示；写失败弹 `import_export_failed`，挑到不相干的 json 弹
+  `import_unreadable`（这两条原来全静默）。
+- `:467 writeExportFile`：写失败不再把路径交出去。当前无调用方，属同类隐患顺手堵掉。
+
+### v2.0.2 追加部分的验证
+
+- 真机（Mate 90 Pro 模拟器，装 2.0.2 hap）：导出 → toast `Exported 11 devices`；文件管理实拍 Download 里
+  两个 `device…json` **各 2.43 KB**；再点导入 → 选择器直接落在 `我的手机 > Download` 并列出两份备份；
+  选中 → `Nothing new to merge`，11 台没变；全程 hilog 里 `BackupStore` **零条**记录。
+- 自动备份那条沙箱写路径同时被验到：导入前会 `forceBackup`，它失败的话走的是 `import_rollback_import`
+  而不是"没有新设备"。
+- `_test_lang_device_harmony.py` **102 条断言 0 失败**（含两条新的页脚断言：文案对得上、URL 不外露）。
+- 页脚改动另跑过 `_check_i18n.py` / `_check_interop.py`(14 条) / `_check_lang_loop.py`(15 条) 全绿。
+
+---
+
+## v2.0.1（2026-10-13）
 修 v2.0.0 的多语言在鸿蒙真机上的三个问题：**切语言闪退**、**默认语言不对**、**跟随系统选不回来**。
 与安卓版 v2.0.1 同一轮，版本号对齐。
 

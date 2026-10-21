@@ -127,7 +127,7 @@
     "fmt_m": "百万",
     "fmt_wan": "万",
     "fmt_yi": "亿",
-    "footer_github": "我的 GitHub：{0}",
+    "footer_github": "我的 GitHub",
     "import_backup_unreadable": "这份备份读不出来",
     "import_cancel": "取消",
     "import_chooser_title": "导出设备账数据",

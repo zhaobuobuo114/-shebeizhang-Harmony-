@@ -25,6 +25,22 @@ export interface BackupFile {
   badgeCount: number;
 }
 
+/**
+ * 导出结局。必须把「用户取消」和「真的没写进去」分开：
+ * 选择器点取消也会走到一条空返回，若统一报失败，用户每次取消都会被莫名骂一句；
+ * 反过来写失败若不吭声，用户带走的就是选择器刚建好的那个 0 字节空壳。
+ */
+export interface ExportOutcome {
+  cancelled: boolean;
+  written: boolean;
+}
+
+/** 导入结局，同样要分清取消（不提示）和挑到了不相干的文件（要提示） */
+export interface ImportOutcome {
+  cancelled: boolean;
+  snapshot: Snapshot | undefined;
+}
+
 /* ---------------- 文件里出现的结构 ---------------- */
 
 interface BadgeRecord {
@@ -85,6 +101,12 @@ export class BackupStore {
 
   private static readonly DIR_BACKUP: string = 'backups';
   private static readonly DIR_EXPORT: string = 'export';
+  /**
+   * 选择器默认停在"最近"，而那一页只列媒体库认识的类型，.json 一个都不显示——
+   * 用户导完再点导入，看到的就是一个空列表，以为文件没生成。显式指到 Download，
+   * 让导出落在哪、导入就从哪找。
+   */
+  private static readonly PICKER_DIR: string = 'file://docs/storage/Users/currentUser/Download';
 
   private static ctx: common.UIAbilityContext | undefined = undefined;
 
@@ -456,47 +478,73 @@ export class BackupStore {
         }
       }
       const path: string = dir + '/' + BackupStore.fileName();
-      BackupStore.writeText(path, BackupStore.buildJson(snapshot));
-      return path;
+      // 写失败就不能把路径交出去，否则调用方拿着一个空文件去分享，又是一次"空壳"
+      return BackupStore.writeText(path, BackupStore.buildJson(snapshot)) ? path : '';
     } catch (e) {
       return '';
     }
   }
 
-  /** 弹系统文件选择器，把数据存成一个 .json；返回是否存成 */
-  static async saveViaPicker(ctx: common.UIAbilityContext, snapshot: Snapshot): Promise<boolean> {
+  /** 弹系统文件选择器，把数据存成一个 .json */
+  static async saveViaPicker(ctx: common.UIAbilityContext, snapshot: Snapshot): Promise<ExportOutcome> {
+    const dp: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
+    const opt: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
+    opt.newFileNames = [BackupStore.fileName()];
+    // fileSuffixChoices 的格式是「描述|后缀」，没有 | 时整串就是后缀。
+    // 原先写的 'json' 少了个点，选择器把文件存成 device-ledger-xxxx-1155json，
+    // 于是导入那边按 .json 过滤，永远看不到自己刚导出的文件。
+    opt.fileSuffixChoices = ['.json'];
+    opt.defaultFilePathUri = BackupStore.PICKER_DIR;
+    let uris: string[] | undefined = undefined;
     try {
-      const dp: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
-      const opt: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-      opt.newFileNames = [BackupStore.fileName()];
-      opt.fileSuffixChoices = ['json'];
-      const uris: string[] = await dp.save(opt);
-      if (uris.length === 0) {
-        return false;
-      }
-      return BackupStore.writeText(uris[0], BackupStore.buildJson(snapshot));
+      uris = await dp.save(opt);
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'save picker failed: %{public}s', JSON.stringify(e));
-      return false;
+      hilog.warn(DOMAIN, TAG, 'save at default dir failed: %{public}s', JSON.stringify(e));
     }
+    if (uris === undefined) {
+      // 取消是"返回空数组"，打不开才是"抛异常"，两者不能混。
+      // 万一某个 ROM 不认这个默认目录，退回系统默认位置再开一次，
+      // 绝不能让导出按钮变成点了没反应。
+      opt.defaultFilePathUri = '';
+      try {
+        uris = await dp.save(opt);
+      } catch (e) {
+        hilog.error(DOMAIN, TAG, 'save picker failed: %{public}s', JSON.stringify(e));
+        return { cancelled: true, written: false };
+      }
+    }
+    if (uris.length === 0) {
+      return { cancelled: true, written: false };
+    }
+    return { cancelled: false, written: BackupStore.writeText(uris[0], BackupStore.buildJson(snapshot)) };
   }
 
-  /** 弹系统文件选择器挑一个 .json 进来；返回解析结果，取消则返回 undefined */
-  static async pickViaPicker(ctx: common.UIAbilityContext): Promise<Snapshot | undefined> {
+  /** 弹系统文件选择器挑一个 .json 进来 */
+  static async pickViaPicker(ctx: common.UIAbilityContext): Promise<ImportOutcome> {
+    const dp: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
+    const opt: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
+    opt.maxSelectNumber = 1;
+    opt.fileSuffixFilters = ['.json'];
+    opt.defaultFilePathUri = BackupStore.PICKER_DIR;
+    let uris: string[] | undefined = undefined;
     try {
-      const dp: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
-      const opt: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
-      opt.maxSelectNumber = 1;
-      opt.fileSuffixFilters = ['.json'];
-      const uris: string[] = await dp.select(opt);
-      if (uris.length === 0) {
-        return undefined;
-      }
-      return BackupStore.parseJson(BackupStore.readText(uris[0]));
+      uris = await dp.select(opt);
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'select picker failed: %{public}s', JSON.stringify(e));
-      return undefined;
+      hilog.warn(DOMAIN, TAG, 'select at default dir failed: %{public}s', JSON.stringify(e));
     }
+    if (uris === undefined) {
+      opt.defaultFilePathUri = '';
+      try {
+        uris = await dp.select(opt);
+      } catch (e) {
+        hilog.error(DOMAIN, TAG, 'select picker failed: %{public}s', JSON.stringify(e));
+        return { cancelled: true, snapshot: undefined };
+      }
+    }
+    if (uris.length === 0) {
+      return { cancelled: true, snapshot: undefined };
+    }
+    return { cancelled: false, snapshot: BackupStore.parseJson(BackupStore.readText(uris[0])) };
   }
 
   /* ---------------- 文件读写的小工具 ---------------- */
@@ -534,37 +582,98 @@ export class BackupStore {
     }
   }
 
+  private static isUri(path: string): boolean {
+    return path.startsWith('file://');
+  }
+
+  /**
+   * 写一段文本。path 有两种：应用沙箱路径，或选择器返回的 file:// URI，两者不能一视同仁——
+   * `accessSync`/`mkdirSync`/`statSync` 的入参官方写的是 "Application sandbox path"，
+   * 拿 URI 去调会被文件沙箱判 13900012 (Permission denied)。原先 writeText 无条件
+   * 对路径做 lastIndexOf('/') + mkdirSync，导出正是死在这一步：选择器已经把空文件建好，
+   * 一个字节没写的它就以"空壳文件"的形式留在了用户挑的位置。
+   */
   private static writeText(path: string, text: string): boolean {
+    let file: fs.File | undefined = undefined;
     try {
-      const dirEnd: number = path.lastIndexOf('/');
-      if (dirEnd > 0) {
-        const dir: string = path.substring(0, dirEnd);
-        if (!BackupStore.exists(dir)) {
-          fs.mkdirSync(dir, true);
+      if (BackupStore.isUri(path)) {
+        // URI 指向的空白文件已由选择器建好，这里只要句柄；清空是必须的：
+        // 用户覆盖旧文件时不清空，尾部会留下上一份的残字节，整份 JSON 就废了
+        file = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE);
+        fs.truncateSync(file.fd, 0);
+      } else {
+        const dirEnd: number = path.lastIndexOf('/');
+        if (dirEnd > 0) {
+          const dir: string = path.substring(0, dirEnd);
+          if (!BackupStore.exists(dir)) {
+            fs.mkdirSync(dir, true);
+          }
         }
+        file = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY);
       }
-      const file: fs.File = fs.openSync(path, fs.OpenMode.CREATE | fs.OpenMode.TRUNC | fs.OpenMode.WRITE_ONLY);
-      fs.writeSync(file.fd, text);
-      fs.closeSync(file);
-      return true;
+      const bytes: number = new util.TextEncoder().encodeInto(text).length;
+      const written: number = fs.writeSync(file.fd, text);
+      // 只写了一半也返回成功的话，用户带走的就是一个打不开的备份
+      return written === bytes;
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'write failed: %{public}s', JSON.stringify(e));
       return false;
+    } finally {
+      BackupStore.closeQuietly(file);
     }
   }
 
+  /** 读一段文本；读不出来返回空串，由调用方决定怎么向用户交代 */
   private static readText(path: string): string {
+    let file: fs.File | undefined = undefined;
     try {
-      const size: number = fs.statSync(path).size;
-      const buf: ArrayBuffer = new ArrayBuffer(size);
-      const file: fs.File = fs.openSync(path, fs.OpenMode.READ_ONLY);
-      fs.readSync(file.fd, buf);
-      fs.closeSync(file);
+      file = fs.openSync(path, fs.OpenMode.READ_ONLY);
+      // 不能先 statSync(path) 拿大小：URI 要到 API 22 才允许传进 statSync，
+      // 低一点的系统上这一步就抛 13900012。边读边收，读到文件尾为止。
+      const chunks: Uint8Array[] = [];
+      const chunkSize: number = 64 * 1024;
+      // 轮数封顶只为防死循环；真撞到顶就当作读失败，绝不交出一份被截断的"前半截"
+      const maxRounds: number = 4096;
+      let total: number = 0;
+      let eof: boolean = false;
+      for (let round: number = 0; round < maxRounds; round++) {
+        const buf: ArrayBuffer = new ArrayBuffer(chunkSize);
+        const n: number = fs.readSync(file.fd, buf);
+        if (n <= 0) {
+          eof = true;
+          break;
+        }
+        chunks.push(new Uint8Array(buf, 0, n));
+        total += n;
+      }
+      if (!eof) {
+        hilog.error(DOMAIN, TAG, 'read stopped early at %{public}d bytes', total);
+        return '';
+      }
+      const all: Uint8Array = new Uint8Array(total);
+      let off: number = 0;
+      for (let i: number = 0; i < chunks.length; i++) {
+        all.set(chunks[i], off);
+        off += chunks[i].length;
+      }
       const decoder: util.TextDecoder = new util.TextDecoder('utf-8');
-      return decoder.decodeToString(new Uint8Array(buf));
+      return decoder.decodeToString(all);
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'read failed: %{public}s', JSON.stringify(e));
       return '';
+    } finally {
+      BackupStore.closeQuietly(file);
+    }
+  }
+
+  private static closeQuietly(file: fs.File | undefined): void {
+    if (file === undefined) {
+      return;
+    }
+    try {
+      fs.closeSync(file);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'close failed: %{public}s', JSON.stringify(e));
     }
   }
 }

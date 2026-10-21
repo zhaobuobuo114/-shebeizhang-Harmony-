@@ -127,7 +127,7 @@
     "fmt_m": "百万",
     "fmt_wan": "万",
     "fmt_yi": "億",
-    "footer_github": "私の GitHub：{0}",
+    "footer_github": "私の GitHub",
     "import_backup_unreadable": "このバックアップは読み込めません",
     "import_cancel": "キャンセル",
     "import_chooser_title": "デバイス台帳を書き出す",

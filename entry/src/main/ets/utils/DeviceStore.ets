@@ -9,7 +9,6 @@ const TAG: string = 'DeviceStore';
 const STORE_NAME: string = 'device_ledger_store';
 const KEY_LIST: string = 'device_list';
 const KEY_DARK: string = 'dark_mode';
-const KEY_AGREED: string = 'privacy_agreed';
 const KEY_TRASH: string = 'trash_list';
 const KEY_BADGE: string = 'badge_state';
 const KEY_BACKUP_SLOT: string = 'backup_slot';
@@ -134,31 +133,6 @@ export class DeviceStore {
       DeviceStore.pref.flushSync();
     } catch (e) {
       hilog.error(DOMAIN, TAG, 'saveLanguage failed: %{public}s', JSON.stringify(e));
-    }
-  }
-
-  /** 是否已阅读并同意隐私条款与服务条款（首次启动时确认过一次就记下来） */
-  static loadAgreed(): boolean {
-    if (DeviceStore.pref === undefined) {
-      return false;
-    }
-    try {
-      return DeviceStore.pref.getSync(KEY_AGREED, false) as boolean;
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'read agreed failed: %{public}s', JSON.stringify(e));
-      return false;
-    }
-  }
-
-  static saveAgreed(agreed: boolean): void {
-    if (DeviceStore.pref === undefined) {
-      return;
-    }
-    try {
-      DeviceStore.pref.putSync(KEY_AGREED, agreed);
-      DeviceStore.pref.flushSync();
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'save agreed failed: %{public}s', JSON.stringify(e));
     }
   }
 
